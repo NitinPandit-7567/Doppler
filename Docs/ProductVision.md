@@ -162,7 +162,7 @@ Power users can compose their own agents from a library of tools — without wri
 | **Patch Analyst** | Detects new Valve patches, generates price impact reports | On new patch detection |
 | **Portfolio Advisor** | Reviews inventory health, suggests holds and sells | Daily |
 | **Case Analyst** | Evaluates case investment outlook using supply, demand, and patch context | Weekly |
-| **Tournament Tracker** | Monitors upcoming CS2 majors, identifies sticker capsules likely to appreciate | Event-driven |
+| **Tournament Tracker** | Monitors upcoming CS2 majors, identifies sticker capsules likely to appreciate | Event-driven | *(post-launch roadmap)* |
 | **Custom Agents** | User-defined goal, tools, schedule, and limits | User-configured |
 
 ---

@@ -13,20 +13,24 @@ Doppler uses a Turborepo monorepo. All apps and shared packages live in a single
 doppler/
 ├── apps/
 │   ├── web/                   → Next.js 15 (App Router)
-│   ├── api/                   → Express.js backend
+│   ├── api/                   → Express.js backend (REST + WebSocket)
+│   ├── worker/                → BullMQ agent workers (separate process)
 │   └── mobile/                → Expo (React Native) — Phase 5
 ├── packages/
 │   ├── agents/                → Agent framework + all agent definitions
-│   ├── db/                    → Prisma schema, client, migrations
+│   ├── db/                    → Prisma schema, client, migrations, typed Json helpers
 │   ├── steam-client/          → Steam API + Market wrapper
 │   ├── csfloat-client/        → CSFloat API wrapper
-│   ├── api-client/            → HTTP client shared by web + mobile
-│   ├── store/                 → Zustand state (shared by web + mobile)
-│   └── types/                 → All shared TypeScript interfaces
+│   └── types/                 → All shared TypeScript interfaces + Zod schemas
 ├── turbo.json
 ├── package.json               → Root workspace config
+├── tsconfig.base.json         → Shared strict TypeScript config
 └── .env.example
 ```
+
+> **Note:** `packages/api-client` and `packages/store` are created in Phase 5 (mobile)
+> when shared client-side code is needed across web and mobile.
+
 
 ### 1.2 Bootstrapping Commands
 
@@ -49,12 +53,12 @@ mkdir agents db steam-client csfloat-client api-client store types
 npm install -D typescript @types/node turbo prettier eslint
 ```
 
-### 1.3 turbo.json
+### 1.3 turbo.json (Turbo v2 syntax)
 
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
+  "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": [".next/**", "dist/**"]
@@ -64,12 +68,46 @@ npm install -D typescript @types/node turbo prettier eslint
       "persistent": true
     },
     "lint": {},
+    "test": {},
     "type-check": {
       "dependsOn": ["^build"]
     }
   }
 }
 ```
+
+### 1.4 Shared tsconfig.base.json
+
+All packages and apps extend this base config. Strict mode is non-negotiable.
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+Key flags:
+- `strict: true` — enables `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, and all other strict checks
+- `noUncheckedIndexedAccess: true` — array/object index access returns `T | undefined` instead of `T`, prevents runtime crashes on missing keys
+- `noImplicitOverride: true` — forces explicit `override` keyword on method overrides
 
 ---
 
@@ -282,8 +320,8 @@ model ListingCache {
 enum Platform {
   STEAM
   CSFLOAT
-  SKINPORT
-  BUFF163
+  // SKINPORT  — Phase 2+ (post-launch roadmap)
+  // BUFF163   — Phase 2+ (post-launch roadmap)
 }
 
 // ─── WATCHLIST ────────────────────────────────────────────
@@ -843,6 +881,480 @@ export function createPatchAnalystAgent() {
 }
 ```
 
+### 4.5 LLM Model Selection Per Agent
+
+Not every agent needs GPT-4o. Use the cheapest model that produces reliable results.
+
+| Agent | Model | Reasoning |
+|---|---|---|
+| Deal Hunter | `gpt-4o-mini` | Core logic is arithmetic (price comparison + fee calculation). LLM just formats output and handles edge cases. |
+| Auction Sniper | `gpt-4o-mini` | Same as Deal Hunter — price comparison with time pressure. |
+| Patch Analyst | `gpt-4o` | Needs deep reasoning: reading patch notes, cross-referencing history, predicting market impact. |
+| Portfolio Advisor | `gpt-4o` | Needs nuanced judgment: hold/sell recommendations based on trends and context. |
+| Case Analyst | `gpt-4o` | Supply/demand analysis with web search synthesis. |
+| Custom Agents | User selects (default: `gpt-4o-mini`) | Power users can choose model; free/trader tiers locked to `gpt-4o-mini`. |
+| Freeform AI Query | `gpt-4o` | User-facing conversational quality matters here. |
+
+---
+
+## 4B. TypeScript Strategy
+
+### 4B.1 Rules
+
+1. **Zero `any`** — the codebase must never use `:any`, `as any`, or `@ts-ignore`. Configure ESLint to enforce this:
+   ```json
+   {
+     "@typescript-eslint/no-explicit-any": "error",
+     "@typescript-eslint/no-unsafe-assignment": "error",
+     "@typescript-eslint/no-unsafe-member-access": "error",
+     "@typescript-eslint/no-unsafe-call": "error",
+     "@typescript-eslint/no-unsafe-return": "error"
+   }
+   ```
+
+2. **`unknown` over `any` at boundaries** — data from external APIs (Steam, CSFloat, webhooks) enters as `unknown` and is validated through Zod schemas before use. Never trust external data shapes.
+
+3. **Discriminated unions over loose optional fields** — when a value can be one of several shapes, use discriminated unions with a literal tag field, not a bag of optional properties.
+
+4. **`readonly` by default** — function parameters and return types should be `readonly` or `Readonly<T>` unless mutation is explicitly needed.
+
+5. **No type assertions except narrowing** — `as const` and `as SomeType` after a type guard are fine. `as SomeType` to silence the compiler is not.
+
+### 4B.2 Typed Prisma Json Fields
+
+Every `Json` field in the Prisma schema gets a corresponding Zod schema and TypeScript type. Prisma's `Json` type is `JsonValue` (effectively `unknown`), so we wrap access in typed helpers.
+
+```typescript
+// packages/types/src/market.ts
+
+import { z } from 'zod';
+
+// ── Steam Inventory Item ─────────────────────────
+export const SteamInventoryItemSchema = z.object({
+  assetId: z.string(),
+  classId: z.string(),
+  instanceId: z.string(),
+  marketHashName: z.string(),
+  iconUrl: z.string(),
+  tradable: z.boolean(),
+  marketable: z.boolean(),
+  tags: z.array(z.object({
+    category: z.string(),
+    internalName: z.string(),
+    localizedCategoryName: z.string(),
+    localizedTagName: z.string(),
+  })),
+});
+
+export type SteamInventoryItem = z.infer<typeof SteamInventoryItemSchema>;
+
+// ── CSFloat Listing ──────────────────────────────
+export const CSFloatListingSchema = z.object({
+  id: z.string(),
+  marketHashName: z.string(),
+  price: z.number(),
+  floatValue: z.number().nullable(),
+  paintSeed: z.number().nullable(),
+  paintIndex: z.number().nullable(),
+  dMarketLink: z.string().nullable(),
+  screenshotUrl: z.string().nullable(),
+  createdAt: z.string(),
+  sellerSteamId: z.string(),
+  isAuction: z.boolean(),
+  auctionEndsAt: z.string().nullable(),
+});
+
+export type CSFloatListing = z.infer<typeof CSFloatListingSchema>;
+
+// ── Deal Data ────────────────────────────────────
+export const DealDataSchema = z.object({
+  listing: CSFloatListingSchema,
+  steamPrice: z.number(),
+  effectiveDiscount: z.number(),
+  feeAdjustedCost: z.number(),
+  dealScore: z.number().min(0).max(100),
+  reasoning: z.string(),
+});
+
+export type DealData = z.infer<typeof DealDataSchema>;
+```
+
+```typescript
+// packages/types/src/agents.ts
+
+import { z } from 'zod';
+
+// ── Agent Step (stored in AgentRun.steps Json field) ─────
+export const AgentStepSchema = z.object({
+  stepNumber: z.number(),
+  text: z.string(),
+  toolCalls: z.array(z.object({
+    toolName: z.string(),
+    args: z.record(z.unknown()),
+  })).optional(),
+  toolResults: z.array(z.object({
+    toolName: z.string(),
+    result: z.unknown(),
+  })).optional(),
+  usage: z.object({
+    promptTokens: z.number(),
+    completionTokens: z.number(),
+    totalTokens: z.number(),
+  }).optional(),
+  finishReason: z.string().optional(),
+  timestamp: z.string().datetime(),
+});
+
+export type AgentStep = z.infer<typeof AgentStepSchema>;
+
+// ── Agent Action Payload ─────────────────────────
+export const TradeActionPayloadSchema = z.object({
+  listingId: z.string(),
+  platform: z.enum(['STEAM', 'CSFLOAT']),
+  itemName: z.string(),
+  priceUsd: z.number(),
+  floatValue: z.number().nullable(),
+  listingUrl: z.string(),
+});
+
+export type TradeActionPayload = z.infer<typeof TradeActionPayloadSchema>;
+
+// ── Patch Report Analysis ────────────────────────
+export const PatchAnalysisSchema = z.object({
+  summary: z.string(),
+  buffedWeapons: z.array(z.string()),
+  nerfedWeapons: z.array(z.string()),
+  newContent: z.array(z.string()),
+  metaChanges: z.string(),
+});
+
+export type PatchAnalysis = z.infer<typeof PatchAnalysisSchema>;
+
+export const AffectedItemSchema = z.object({
+  itemName: z.string(),
+  direction: z.enum(['up', 'down', 'neutral']),
+  confidence: z.number().min(1).max(10),
+  timeHorizon: z.enum(['immediate', '1week', '1month']),
+  reasoning: z.string(),
+});
+
+export type AffectedItem = z.infer<typeof AffectedItemSchema>;
+```
+
+```typescript
+// packages/db/src/json-helpers.ts
+// Typed accessors for Prisma Json fields — parse at read time, validate at write time.
+
+import { Prisma } from '@prisma/client';
+import { z } from 'zod';
+
+/**
+ * Parse a Prisma Json field through a Zod schema.
+ * Returns the typed value or throws with a descriptive error.
+ */
+export function parseJsonField<T>(
+  schema: z.ZodType<T>,
+  value: Prisma.JsonValue,
+  fieldName: string,
+): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new Error(
+      `Invalid JSON in ${fieldName}: ${result.error.issues.map(i => i.message).join(', ')}`
+    );
+  }
+  return result.data;
+}
+
+/**
+ * Serialize a typed value for writing to a Prisma Json field.
+ * Validates before writing — rejects invalid shapes at write time, not read time.
+ */
+export function toJsonField<T>(
+  schema: z.ZodType<T>,
+  value: T,
+): Prisma.InputJsonValue {
+  schema.parse(value);
+  return value as unknown as Prisma.InputJsonValue;
+}
+```
+
+Usage in practice:
+
+```typescript
+import { parseJsonField, toJsonField } from '@doppler/db';
+import { DealDataSchema, type DealData } from '@doppler/types';
+
+// READING — parse from Prisma's untyped Json into a typed object
+const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+const dealData: DealData = parseJsonField(DealDataSchema, deal.dealData, 'Deal.dealData');
+//    ^-- fully typed from here on, no `as any` needed
+
+// WRITING — validate before storing
+await prisma.deal.create({
+  data: {
+    ...otherFields,
+    dealData: toJsonField(DealDataSchema, {
+      listing: csFloatListing,
+      steamPrice: 38.00,
+      effectiveDiscount: 0.11,
+      feeAdjustedCost: 29.07,
+      dealScore: 72,
+      reasoning: 'Listing is 11% below Steam after fees.',
+    }),
+  },
+});
+```
+
+### 4B.3 Typed Express Request
+
+Express's `Request` object has no `user` property. We augment it globally.
+
+```typescript
+// apps/api/src/types/express.d.ts
+
+import { Plan } from '@prisma/client';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user: {
+        id: string;
+        steamId: string;
+        plan: Plan;
+      };
+    }
+  }
+}
+```
+
+The auth middleware populates this and narrows the type:
+
+```typescript
+// apps/api/src/middleware/auth.ts
+
+import { Request, Response, NextFunction } from 'express';
+import { createClient } from '@supabase/supabase-js';
+import { prisma } from '@doppler/db';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Missing authorization header' });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+  const { data: { user: supabaseUser }, error } = await supabase.auth.getUser(token);
+
+  if (error || !supabaseUser) {
+    res.status(401).json({ error: 'Invalid or expired token' });
+    return;
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: supabaseUser.id },
+    select: { id: true, steamId: true, plan: true },
+  });
+
+  if (!dbUser) {
+    res.status(401).json({ error: 'User not found' });
+    return;
+  }
+
+  req.user = dbUser;
+  next();
+}
+```
+
+### 4B.4 Typed API Responses
+
+All API endpoints use a consistent response envelope. No `res.json(data)` with an unknown shape.
+
+```typescript
+// packages/types/src/api.ts
+
+// Success response
+export interface ApiResponse<T> {
+  readonly success: true;
+  readonly data: T;
+}
+
+// Error response
+export interface ApiError {
+  readonly success: false;
+  readonly error: string;
+  readonly code?: string;
+}
+
+// Paginated response
+export interface PaginatedResponse<T> {
+  readonly success: true;
+  readonly data: readonly T[];
+  readonly pagination: {
+    readonly total: number;
+    readonly page: number;
+    readonly limit: number;
+    readonly hasMore: boolean;
+  };
+}
+
+// Union type used in route handlers
+export type ApiResult<T> = ApiResponse<T> | ApiError;
+```
+
+### 4B.5 Typed WebSocket Events
+
+Socket.io supports typed events natively. Define all events in one place.
+
+```typescript
+// packages/types/src/socket-events.ts
+
+import type { DealData, AgentStep, TradeActionPayload } from './agents';
+
+export interface ServerToClientEvents {
+  'deal:new': (payload: DealNewEvent) => void;
+  'deal:expired': (payload: { dealId: string }) => void;
+  'alert:new': (payload: AlertEvent) => void;
+  'agent:run:start': (payload: AgentRunStartEvent) => void;
+  'agent:run:finish': (payload: AgentRunFinishEvent) => void;
+  'agent:step': (payload: AgentStepEvent) => void;
+  'action:pending': (payload: ActionPendingEvent) => void;
+  'price:update': (payload: PriceUpdateEvent) => void;
+}
+
+export interface ClientToServerEvents {
+  'subscribe:watchlist': (itemNames: readonly string[]) => void;
+  'unsubscribe:watchlist': (itemNames: readonly string[]) => void;
+}
+
+export interface DealNewEvent {
+  readonly dealId: string;
+  readonly itemName: string;
+  readonly platform: 'STEAM' | 'CSFLOAT';
+  readonly listedPrice: number;
+  readonly steamPrice: number;
+  readonly discountPct: number;
+  readonly floatValue: number | null;
+  readonly dealScore: number;
+  readonly expiresAt: string | null;
+  readonly listingUrl: string;
+}
+
+export interface AgentRunStartEvent {
+  readonly agentId: string;
+  readonly runId: string;
+  readonly agentName: string;
+}
+
+export interface AgentRunFinishEvent {
+  readonly agentId: string;
+  readonly runId: string;
+  readonly status: 'COMPLETED' | 'FAILED';
+  readonly summary: string;
+  readonly dealsFound: number;
+  readonly actionsCount: number;
+}
+
+export interface AgentStepEvent {
+  readonly runId: string;
+  readonly step: number;
+  readonly toolName: string | null;
+  readonly reasoning: string;
+}
+
+export interface ActionPendingEvent {
+  readonly actionId: string;
+  readonly actionType: 'BUY' | 'SELL';
+  readonly itemName: string;
+  readonly valueUsd: number;
+  readonly platform: string;
+  readonly reasoning: string;
+  readonly expiresAt: string;
+}
+
+export interface AlertEvent {
+  readonly alertId: string;
+  readonly type: string;
+  readonly title: string;
+  readonly message: string;
+  readonly payload: Record<string, unknown> | null;
+}
+
+export interface PriceUpdateEvent {
+  readonly itemName: string;
+  readonly platform: string;
+  readonly priceUsd: number;
+  readonly changePercent: number;
+}
+```
+
+Usage with typed Socket.io server:
+
+```typescript
+// apps/api/src/server.ts
+import { Server as SocketServer } from 'socket.io';
+import type { ServerToClientEvents, ClientToServerEvents } from '@doppler/types';
+
+export const io = new SocketServer<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+  cors: { origin: process.env.WEB_URL },
+});
+
+// Now io.emit('deal:new', payload) is fully type-checked —
+// wrong event names or missing fields are compile errors.
+```
+
+### 4B.6 External API Response Validation
+
+Data from Steam and CSFloat enters as `unknown` and must pass through Zod before use.
+
+```typescript
+// packages/steam-client/src/prices.ts
+
+import { z } from 'zod';
+import axios from 'axios';
+import { redis } from './cache';
+
+const SteamPriceResponseSchema = z.object({
+  success: z.boolean(),
+  lowest_price: z.string().optional(),
+  median_price: z.string().optional(),
+  volume: z.string().optional(),
+});
+
+export type SteamPriceResponse = z.infer<typeof SteamPriceResponseSchema>;
+
+export async function getPriceOverview(itemName: string): Promise<SteamPriceResponse> {
+  const cacheKey = `steam:price:${itemName}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    return SteamPriceResponseSchema.parse(JSON.parse(cached));
+  }
+
+  const response = await axios.get(
+    'https://steamcommunity.com/market/priceoverview/',
+    {
+      params: { appid: 730, currency: 1, market_hash_name: itemName },
+    },
+  );
+
+  // Validate external data — never trust the shape
+  const validated = SteamPriceResponseSchema.parse(response.data);
+
+  await redis.setex(cacheKey, 15 * 60, JSON.stringify(validated));
+  return validated;
+}
+```
+
 ---
 
 ## 5. API Routes — Full Specification
@@ -1009,59 +1521,128 @@ router.post('/ask', async (req, res) => {
 
 ## 6. Job Queue — BullMQ Setup
 
+### 6.1 Process Separation
+
+The API server and BullMQ workers run as **separate processes**. This prevents a slow agent run (20+ LLM round-trips) from blocking API request handling.
+
+```
+Railway deploys two services from the same repo:
+  apps/api/    → Start command: node dist/server.js     (REST + WebSocket)
+  apps/worker/ → Start command: node dist/worker.js     (BullMQ job processor)
+```
+
+Both services share the same `packages/*` code and connect to the same PostgreSQL and Redis.
+
+### 6.2 Queue Definition (shared by API + Worker)
+
 ```typescript
-// apps/api/src/jobs/queue.ts
+// packages/agents/src/queue/connection.ts
 
-import { Queue, Worker, QueueScheduler } from 'bullmq';
+import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
-import { runDealHunter } from './dealHunter.job';
-import { runPatchScraper } from './patchScraper.job';
-import { runAuctionSniper } from './auctionSniper.job';
-import { runPortfolioAdvisor } from './portfolioAdvisor.job';
 
-const connection = new Redis(process.env.UPSTASH_REDIS_URL!);
+const connection = new Redis(process.env.UPSTASH_REDIS_URL!, {
+  maxRetriesPerRequest: null,
+});
 
 export const agentQueue = new Queue('agent-runs', { connection });
-export const scheduler = new QueueScheduler('agent-runs', { connection });
+```
 
-// Register repeating jobs for system agents
+### 6.3 Job Bootstrapper (called by Worker on startup)
+
+```typescript
+// apps/worker/src/bootstrap.ts
+
+import { agentQueue } from '@doppler/agents/queue';
+
 export async function bootstrapSystemJobs() {
-  // Deal Hunter — every 5 minutes for all users
-  await agentQueue.add('deal-hunter', {}, {
-    repeat: { every: 5 * 60 * 1000 },
-    jobId: 'system-deal-hunter',
-  });
+  // Deal Hunter — every 5 minutes
+  await agentQueue.upsertJobScheduler('deal-hunter', {
+    every: 5 * 60 * 1000,
+  }, { name: 'deal-hunter', data: {} });
 
   // Auction Sniper — every 2 minutes
-  await agentQueue.add('auction-sniper', {}, {
-    repeat: { every: 2 * 60 * 1000 },
-    jobId: 'system-auction-sniper',
-  });
+  await agentQueue.upsertJobScheduler('auction-sniper', {
+    every: 2 * 60 * 1000,
+  }, { name: 'auction-sniper', data: {} });
 
   // Patch Scraper — every hour
-  await agentQueue.add('patch-scraper', {}, {
-    repeat: { every: 60 * 60 * 1000 },
-    jobId: 'system-patch-scraper',
-  });
+  await agentQueue.upsertJobScheduler('patch-scraper', {
+    every: 60 * 60 * 1000,
+  }, { name: 'patch-scraper', data: {} });
 
-  // Portfolio Advisor — every day at 9am
-  await agentQueue.add('portfolio-advisor', {}, {
-    repeat: { cron: '0 9 * * *' },
-    jobId: 'system-portfolio-advisor',
-  });
+  // Portfolio Advisor — every day at 9am UTC
+  await agentQueue.upsertJobScheduler('portfolio-advisor', {
+    pattern: '0 9 * * *',
+  }, { name: 'portfolio-advisor', data: {} });
 }
+```
 
-// Worker processes jobs
-export const worker = new Worker('agent-runs', async (job) => {
+### 6.4 Worker Process
+
+```typescript
+// apps/worker/src/worker.ts
+
+import { Worker } from 'bullmq';
+import { Redis } from 'ioredis';
+import { runDealHunter } from './jobs/dealHunter.job';
+import { runPatchScraper } from './jobs/patchScraper.job';
+import { runAuctionSniper } from './jobs/auctionSniper.job';
+import { runPortfolioAdvisor } from './jobs/portfolioAdvisor.job';
+import { runCustomAgent } from './jobs/customAgent.job';
+import { bootstrapSystemJobs } from './bootstrap';
+
+const connection = new Redis(process.env.UPSTASH_REDIS_URL!, {
+  maxRetriesPerRequest: null,
+});
+
+const worker = new Worker('agent-runs', async (job) => {
   switch (job.name) {
-    case 'deal-hunter':     return runDealHunter(job.data);
-    case 'auction-sniper':  return runAuctionSniper(job.data);
-    case 'patch-scraper':   return runPatchScraper(job.data);
+    case 'deal-hunter':       return runDealHunter(job.data);
+    case 'auction-sniper':    return runAuctionSniper(job.data);
+    case 'patch-scraper':     return runPatchScraper(job.data);
     case 'portfolio-advisor': return runPortfolioAdvisor(job.data);
-    case 'custom-agent':    return runCustomAgent(job.data);
-    default: throw new Error(`Unknown job: ${job.name}`);
+    case 'custom-agent':      return runCustomAgent(job.data);
+    default:
+      throw new Error(`Unknown job type: ${job.name}`);
   }
-}, { connection, concurrency: 5 });
+}, {
+  connection,
+  concurrency: 5,
+});
+
+// Register system jobs on startup
+bootstrapSystemJobs().catch(console.error);
+```
+
+### 6.5 Retry & Failure Strategy
+
+All jobs use BullMQ's built-in retry with exponential backoff:
+
+```typescript
+// Default job options applied to all agent jobs
+const DEFAULT_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 5000,  // 5s → 10s → 20s
+  },
+  removeOnComplete: { count: 100 },   // Keep last 100 completed jobs
+  removeOnFail: { count: 500 },       // Keep last 500 failed jobs for debugging
+};
+```
+
+Agent runs handle partial success:
+
+```typescript
+// If the agent completed 5 steps and found 2 deals before failing on step 6,
+// the deals from steps 1-5 are already saved to the database.
+// The AgentRun record is updated with:
+//   status: 'FAILED'
+//   steps: [all steps up to failure]
+//   dealsFound: 2  (partial count)
+//   errorMessage: the error that caused the failure
+// BullMQ retries the entire run on the next attempt.
 ```
 
 ---
@@ -1248,35 +1829,54 @@ function isPatchNote(title: string): boolean {
 
 ### Phase 1 — Foundation (Weeks 1–3)
 
-**Week 1: Monorepo + Infrastructure**
-- [ ] Initialize Turborepo monorepo with all apps and packages
-- [ ] Configure TypeScript across all packages with shared tsconfig
+**Week 1: Monorepo + Infrastructure + TypeScript**
+- [ ] Initialize Turborepo monorepo with `apps/web`, `apps/api`, `apps/worker`
+- [ ] Create all `packages/*` with package.json (`@doppler/types`, `@doppler/db`, etc.)
+- [ ] Configure `tsconfig.base.json` with strict mode (see Section 1.4)
+- [ ] Each package/app extends `tsconfig.base.json`
+- [ ] Configure ESLint with `@typescript-eslint/no-explicit-any: error` across monorepo
+- [ ] Configure Prettier across monorepo
 - [ ] Set up Supabase project — Postgres + Auth
 - [ ] Set up Upstash Redis instance
-- [ ] Configure Railway project for API deployment
+- [ ] Configure Railway project for API + Worker deployment (two services)
 - [ ] Configure Vercel project for web deployment
-- [ ] Set up environment variables across all environments
+- [ ] Set up environment variables across all environments (see Section 10)
 - [ ] Initialize Prisma with base schema (users, settings)
-- [ ] Configure ESLint + Prettier across monorepo
+- [ ] Define initial types in `@doppler/types`: API response envelope, market types, agent types
+- [ ] Set up Vitest at root level (shared test config across packages)
 
 **Week 2: Auth + Steam Integration**
-- [ ] Implement Steam OpenID login via Supabase Auth custom provider
-- [ ] Build `packages/steam-client`: inventory fetch, price overview, price history
-- [ ] Implement Redis caching layer with TTL per endpoint
-- [ ] Add JWT auth middleware to Express
-- [ ] `GET /api/auth/steam` → redirect to Steam OpenID
-- [ ] `GET /api/auth/callback` → exchange for Supabase session
+
+Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provider):
+- [ ] Build `GET /api/auth/steam` — generates Steam OpenID 2.0 redirect URL, sends user to Steam login
+- [ ] Build `GET /api/auth/callback` — receives Steam's OpenID response, validates signature
+- [ ] Call `ISteamUser/GetPlayerSummaries` to get Steam profile (display name, avatar)
+- [ ] Upsert Doppler user in Postgres via Prisma (create if new, update if returning)
+- [ ] Generate Supabase session using `supabase.auth.admin.createUser()` + `generateLink()` or use custom JWT
+- [ ] Return JWT to frontend, store in httpOnly cookie or localStorage
+- [ ] Build `authenticate` Express middleware (see Section 4B.3) — validates JWT, populates typed `req.user`
+- [ ] Build `packages/steam-client`: inventory fetch, price overview
+- [ ] Implement Redis caching layer with TTL per endpoint (15min for prices)
 - [ ] `GET /api/inventory` → fetch and cache user Steam inventory
+- [ ] **Decision: Price history data source** — Steam's price history API requires login cookies. Options:
+  - Use a third-party API (steamapis.com, csgobackpack.net) for historical data
+  - Use CSFloat's historical data if their API supports it
+  - Build authenticated Steam session management (complex, fragile)
+  - Accept current-price-only for MVP, add history in Phase 2
+- [ ] Write unit tests for Steam client: price parsing, cache hit/miss, error handling
+- [ ] Write unit tests for auth middleware: valid token, expired token, missing header
 
 **Week 3: Base UI + CSFloat Client**
 - [ ] Build `packages/csfloat-client`: listings search, auction fetch
+- [ ] Validate all CSFloat API responses through Zod schemas (see Section 4B.6)
 - [ ] Build dashboard layout in Next.js: sidebar nav, header, main area
 - [ ] Inventory table component: item name, wear, float, Steam price, actions
 - [ ] Basic portfolio value card (total USD value)
 - [ ] shadcn/ui theme configuration (dark mode, CS2-inspired color palette)
-- [ ] TanStack Query setup for all data fetching
+- [ ] TanStack Query setup for all data fetching with typed query keys
+- [ ] Write unit tests for CSFloat client: listing parsing, price conversion (cents → USD), error handling
 
-**Phase 1 Deliverable:** User can log in with Steam, view their inventory with current multi-platform prices.
+**Phase 1 Deliverable:** User can log in with Steam, view their inventory with current multi-platform prices. All TypeScript strict, all external API data validated through Zod.
 
 ---
 
@@ -1287,25 +1887,31 @@ function isPatchNote(title: string): boolean {
 - [ ] Build `AgentRunner` class with tool registration and step logging
 - [ ] Build `ActionGuard` with full limit evaluation logic
 - [ ] Implement all tool definitions: Steam tools, CSFloat tools, research tools
-- [ ] Set up BullMQ with job bootstrapper
+- [ ] Set up `apps/worker` as separate BullMQ worker process (see Section 6.1)
+- [ ] Job bootstrapper with system agent schedules (see Section 6.3)
+- [ ] Configure retry strategy: 3 attempts, exponential backoff (see Section 6.5)
 - [ ] Add `agent_configs`, `agent_runs`, `agent_actions` to Prisma schema
+- [ ] Write unit tests for `ActionGuard`: all 5 branch conditions, edge cases (exactly at limit, zero spend, sell below floor)
+- [ ] Write unit tests for deal score calculation logic
 
 **Week 5: Deal Hunter + Alerts**
-- [ ] Build Deal Hunter agent with full prompt and tool set
+- [ ] Build Deal Hunter agent with full prompt and tool set (model: `gpt-4o-mini`)
 - [ ] BullMQ job: run Deal Hunter every 5 minutes across all active users
-- [ ] Deals evaluation logic: calculate effective discount, deal score
+- [ ] Deals evaluation logic: calculate effective discount after platform fees, deal score
 - [ ] Write deals to DB + emit via Socket.io to connected user
-- [ ] Socket.io setup: auth middleware, user rooms
+- [ ] Socket.io setup: typed events (see Section 4B.5), auth middleware, user rooms, token refresh on reconnect
 - [ ] Deal Feed UI: real-time card stream with discount badge, float, platform
 - [ ] Browser push notification on new deal
+- [ ] Write integration test: mock LLM + mock CSFloat API → verify deal created in DB + WebSocket event emitted
 
 **Week 6: Patch Analyst**
-- [ ] Build patch scraper: poll Steam news RSS, detect new patches
+- [ ] Build patch scraper: poll Steam news RSS via Cheerio, detect new patches
 - [ ] BullMQ job: check for patches every hour
-- [ ] Build Patch Analyst agent
-- [ ] Store patch reports to DB with structured `affectedItems` JSON
+- [ ] Build Patch Analyst agent (model: `gpt-4o`)
+- [ ] Store patch reports to DB using typed Json helpers (`toJsonField(PatchAnalysisSchema, ...)`)
 - [ ] Patch Intelligence Center UI: report list, detail view with item impact table
 - [ ] Notify users with affected items in inventory or watchlist
+- [ ] Write unit test for patch scraper: parse real RSS fixture, detect new vs already-processed patches
 
 **Phase 2 Deliverable:** Platform automatically surfaces underpriced CSFloat deals in real time and generates patch impact reports.
 
@@ -1517,4 +2123,69 @@ npm install axios --workspace=packages/steam-client
 | BullMQ job queue buildup | Agent runs delayed | Worker concurrency tuning, dead-letter queue, job TTL |
 | Supabase Postgres connection limits | DB connection errors under load | PgBouncer pooling, Prisma connection limit config |
 | Steam ToS violation | Account bans | Use official API only, no session scraping, respect rate limits |
-```
+| Prisma `Json` fields becoming `any` | Type safety collapses | Zod schemas + typed Json helpers for every Json field (see Section 4B.2) |
+| WebSocket token expiry | Stale connections stop receiving events | Client-side token refresh + Socket.io reconnect with new token |
+| Unbounded table growth | Slow queries, high storage cost | Data retention policy (see Section 13) |
+
+---
+
+## 13. Data Retention Policy
+
+Tables that grow unbounded need cleanup or partitioning.
+
+| Table | Growth Rate | Retention | Cleanup Strategy |
+|---|---|---|---|
+| `price_history` | ~5,000 rows/day (est. 100 items × 2 platforms × 24 snapshots) | 180 days | BullMQ cron job: delete rows older than 180 days, runs daily at 3am |
+| `agent_runs` | ~300 rows/day (6 agents × ~50 runs) | 90 days | Delete completed runs older than 90 days (keep failed for debugging) |
+| `listings_cache` | ~2,000 rows/day | 7 days | Delete where `cachedAt < NOW() - 7 days`, runs daily |
+| `alerts` | ~100 rows/day per active user | 60 days | Delete seen alerts older than 60 days |
+| `inventory_snapshots` | 1 per user per sync (~4/day) | 90 days | Keep one snapshot per day per user after 7 days (aggregate), delete after 90 |
+| `deals` | ~50 rows/day | 30 days | Delete expired/actioned deals older than 30 days |
+
+Implement as a BullMQ scheduled job (`data-cleanup`) that runs daily at 3am UTC.
+
+---
+
+## 14. Testing Strategy
+
+### 14.1 Test Framework
+
+- **Vitest** for unit and integration tests (fast, native ESM, works with TypeScript)
+- **Playwright** for E2E tests (critical user flows)
+- Run via `turbo test` (parallel across packages)
+
+### 14.2 What to Test (By Priority)
+
+**Unit Tests (every package):**
+
+| Module | What to test | Why it matters |
+|---|---|---|
+| `ActionGuard` | All 5 branch conditions: confirm threshold, per-transaction limit, daily spend cap, sell price floor, and the happy path. Edge cases: exactly at limit, zero daily spend, sell with no Steam price. | This code decides whether to spend real money. Every branch must be verified. |
+| Deal score calculation | Discount computation after platform fees, deal score formula, edge cases (zero Steam price, negative discount) | Core business logic — if this is wrong, every deal alert is wrong. |
+| `steam-client` price parser | Parse Steam's price strings (`"$38.50"`) to numbers, handle missing fields, handle rate-limit error responses | Steam returns prices as strings with currency symbols — parsing errors are silent bugs. |
+| `csfloat-client` price conversion | Cents to USD conversion, float value validation (0.0-1.0 range), auction expiry date parsing | CSFloat API returns prices in cents — off-by-100x bugs are easy to introduce. |
+| Zod schemas | Each schema validates correct data and rejects malformed data | These are the boundary between trusted and untrusted data. |
+| `json-helpers` | `parseJsonField` returns typed data, throws on invalid shapes. `toJsonField` rejects invalid writes. | Prevents `any` from leaking through Prisma Json fields. |
+| Patch scraper parser | Parse real Steam news RSS fixture, identify patch notes vs non-patch posts | False positives trigger unnecessary agent runs (cost). False negatives miss real patches. |
+
+**Integration Tests:**
+
+| Flow | What to test |
+|---|---|
+| Auth flow | Steam callback → user creation → JWT issued → middleware accepts token |
+| Deal Hunter job | Mock LLM responses + mock CSFloat/Steam APIs → verify deal created in DB → verify WebSocket event shape |
+| Agent run lifecycle | Create run → log steps → handle failure → verify DB state matches expected status |
+| API routes | Each CRUD route: correct response shape, auth required, proper error codes |
+
+**E2E Tests (Playwright, Phase 3+):**
+
+| Flow | What to verify |
+|---|---|
+| Login → Dashboard | Steam OAuth redirect → callback → dashboard loads with inventory |
+| Deal Feed | Deal appears in real-time when WebSocket event fires |
+| Agent Studio | Create agent → appears in list → trigger manual run → run appears in history |
+| Action Center | Pending action appears → approve → status updates |
+
+### 14.3 Coverage Target
+
+80%+ on `packages/agents` and `packages/steam-client` and `packages/csfloat-client`. These packages contain the business logic and external API interfaces where bugs have the highest impact. Frontend components are tested via E2E flows rather than shallow unit tests.
