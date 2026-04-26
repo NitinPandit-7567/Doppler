@@ -1,8 +1,4 @@
-// Stub — implemented in Sub-Phase 1B
-export function getPriceOverview(_itemName: string): Promise<unknown> {
-  throw new Error('Not implemented — Sub-Phase 1B');
-}
-
-export function getInventory(_steamId: string, _includeNonTradable?: boolean): Promise<unknown> {
-  throw new Error('Not implemented — Sub-Phase 1B');
-}
+export { getPriceOverview, parsePriceString, parseSteamPriceResponse } from './prices';
+export type { ParsedSteamPrice } from './prices';
+export { getInventory } from './inventory';
+export { getOrFetch, invalidate, getRedis } from './cache';

@@ -1,9 +1,10 @@
-import type { Prisma } from '@prisma/client';
 import type { z } from 'zod';
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export function parseJsonField<T>(
   schema: z.ZodType<T>,
-  value: Prisma.JsonValue,
+  value: unknown,
   fieldName: string,
 ): T {
   const result = schema.safeParse(value);
@@ -17,7 +18,7 @@ export function parseJsonField<T>(
 export function toJsonField<T>(
   schema: z.ZodType<T>,
   value: T,
-): Prisma.InputJsonValue {
+): JsonValue {
   schema.parse(value);
-  return value as unknown as Prisma.InputJsonValue;
+  return value as unknown as JsonValue;
 }
