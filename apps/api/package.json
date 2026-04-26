@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "test": "vitest run",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/"
   },
@@ -18,12 +19,18 @@
     "pino-http": "^10.4.0",
     "socket.io": "^4.8.0",
     "zod": "^3.24.0",
+    "jsonwebtoken": "^9.0.0",
+    "axios": "^1.8.0",
+    "cookie-parser": "^1.4.7",
     "@doppler/types": "*",
-    "@doppler/db": "*"
+    "@doppler/db": "*",
+    "@doppler/steam-client": "*"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/cors": "^2.8.17",
+    "@types/jsonwebtoken": "^9.0.0",
+    "@types/cookie-parser": "^1.4.8",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"
   }
