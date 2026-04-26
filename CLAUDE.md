@@ -867,6 +867,62 @@ Components are built on **Radix UI** (headless accessible primitives) + **Tailwi
 
 ---
 
+## Hooks (Automatic Quality Enforcement)
+
+These hooks run automatically via `.claude/settings.json`. No manual invocation needed.
+
+| Hook | Trigger | What it does |
+|------|---------|-------------|
+| **File size guard** | Before writing any file | Blocks writes exceeding 400 lines. Forces splitting into modules. |
+| **Prettier** | After editing `.ts`/`.tsx` files | Auto-formats the file. Consistent style without manual work. |
+| **Type check** | When session ends | Runs `tsc --noEmit` to catch type errors before moving on. |
+
+## Agent Usage During Implementation
+
+Use these specialized agents proactively — don't wait to be asked.
+
+### Mandatory (use every time)
+
+| Agent | When | How to invoke |
+|-------|------|---------------|
+| **code-reviewer** | After writing or modifying any code | Auto-invoked or `/code-review` |
+| **typescript-reviewer** | After TypeScript changes | Catches `any` leaks, assertion abuse, missing generics, weak types |
+| **build-error-resolver** | When `turbo build` or `turbo type-check` fails | Analyzes errors, applies minimal fixes to get green |
+
+### Situational (use when relevant)
+
+| Agent | When | What it catches |
+|-------|------|----------------|
+| **security-reviewer** | Touching auth, API routes, user input, CSFloat API keys, ActionGuard | OWASP Top 10, secrets in code, injection, CSRF, XSS in AI output |
+| **tdd-guide** | Starting a new feature or fixing a bug | Enforces write-tests-first. RED → GREEN → REFACTOR. |
+| **database-reviewer** | Changing Prisma schema, writing queries | N+1 queries, missing indexes, schema design issues, connection limits |
+| **performance-optimizer** | Bundle size concerns, slow queries, render issues | Bottlenecks, unnecessary re-renders, unoptimized images |
+| **planner** | Starting a new Phase or complex feature | Creates step-by-step implementation plan before coding |
+
+### Parallel agent pattern
+
+For independent work, launch agents in parallel:
+
+```
+# When reviewing a feature that touches multiple layers:
+Agent 1: typescript-reviewer on packages/agents changes
+Agent 2: security-reviewer on apps/api route changes
+Agent 3: database-reviewer on Prisma schema changes
+```
+
+## Skills (Slash Commands)
+
+| Command | When to use |
+|---------|-------------|
+| `/plan` | Before starting any Phase — creates implementation plan |
+| `/tdd` | When building new features — write tests first |
+| `/code-review` | After writing code — quality, security, patterns |
+| `/build-fix` | When build fails — auto-fix errors |
+| `/feature-dev` | Guided feature development with codebase analysis |
+| `/security-review` | Before committing auth/API/payment code |
+| `/e2e` | When writing Playwright tests |
+| `/refactor-clean` | After finishing a Phase — remove dead code |
+
 ## Development
 
 ```bash
@@ -879,11 +935,13 @@ turbo test                   # Test all
 turbo type-check             # Type-check all packages
 npx prisma studio            # Visual DB browser (from packages/db/)
 npx prisma migrate dev       # Run migrations (from packages/db/)
+npx playwright test          # E2E tests
+npx shadcn@latest add [name] # Add a shadcn/ui component
 ```
 
 ## File Size Limits
 
-- Max 400 lines per file (split if larger)
+- Max 400 lines per file (split if larger — enforced by PreToolUse hook)
 - Max 50 lines per function
 - Organize by feature/domain, not by file type
 
