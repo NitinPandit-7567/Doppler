@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── USERS ───────────────────────────────────────────────
+
+model User {
+  id              String    @id
+  steamId         String    @unique
+  email           String?   @unique
+  displayName     String
+  avatarUrl       String?
+  plan            Plan      @default(FREE)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  settings        UserSettings?
+  inventorySnaps  InventorySnapshot[]
+  portfolioItems  PortfolioItem[]
+
+  @@map("users")
+}
+
+model UserSettings {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  autoApproveEnabled    Boolean  @default(false)
+  maxBuyPerTransaction  Float    @default(10.0)
+  maxSellDiscountPct    Float    @default(0.85)
+  dailySpendLimit       Float    @default(50.0)
+  confirmAbove          Float    @default(25.0)
+
+  browserPushEnabled    Boolean  @default(true)
+  mobilePushEnabled     Boolean  @default(false)
+  discordWebhookUrl     String?
+  emailEnabled          Boolean  @default(false)
+
+  csFloatApiKey         String?
+  fcmDeviceToken        String?
+
+  updatedAt             DateTime @updatedAt
+
+  @@map("user_settings")
+}
+
+enum Plan {
+  FREE
+  TRADER
+  INVESTOR
+  PRO
+}
+
+// ─── INVENTORY & PORTFOLIO ────────────────────────────────
+
+model InventorySnapshot {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items       Json
+  totalValue  Float
+  capturedAt  DateTime @default(now())
+
+  @@index([userId, capturedAt])
+  @@map("inventory_snapshots")
+}
+
+model PortfolioItem {
+  id              String     @id @default(cuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemName        String
+  assetId         String
+  purchasePrice   Float?
+  purchasedAt     DateTime?
+  currentValue    Float?
+  status          ItemStatus @default(HOLDING)
+  notes           String?
+  updatedAt       DateTime   @updatedAt
+  createdAt       DateTime   @default(now())
+
+  @@unique([userId, assetId])
+  @@map("portfolio_items")
+}
+
+enum ItemStatus {
+  HOLDING
+  WATCHING
+  SELL_TARGET
+  SOLD
+}
