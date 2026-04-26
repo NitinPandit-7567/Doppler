@@ -1,1 +1,1 @@
-export default ['packages/types', 'packages/steam-client', 'apps/api'];
+export default ['packages/types', 'packages/steam-client', 'packages/csfloat-client', 'apps/api'];
