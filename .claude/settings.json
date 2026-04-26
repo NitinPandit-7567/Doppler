@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(turbo *)",
+      "Bash(npx prisma *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(wc *)",
+      "Bash(cat package.json)",
+      "Bash(cat tsconfig*)",
+      "Bash(node -e *)"
+    ],
+    "deny": []
+  }
+}
