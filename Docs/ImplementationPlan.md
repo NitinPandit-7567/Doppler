@@ -117,14 +117,36 @@ Key flags:
 
 | Decision | Choice | Reason |
 |---|---|---|
-| Framework | Next.js 15 | App Router, RSC, built-in API routes, Vercel deploy |
-| Styling | Tailwind CSS + shadcn/ui | Utility-first, great component library, customizable |
+| Framework | Next.js 15 (App Router) | Server Components by default, streaming, Vercel deploy |
+| Styling | Tailwind CSS | Utility-first, no CSS-in-JS runtime |
+| Component library | shadcn/ui (copy-paste source) | Radix primitives + Tailwind. Own the code, no dependency lock-in |
+| Data tables | TanStack Table | Sorting, filtering, pagination, column pinning. Wrapped by shadcn/ui DataTable |
 | State | Zustand | Lightweight, no boilerplate, works in shared packages |
-| Data fetching | TanStack Query (React Query) | Caching, background refresh, loading states |
+| Data fetching | TanStack Query (React Query) | Client-side caching, background refresh, loading states |
 | Charts | Recharts | React-native, flexible, good for price history |
 | Real-time | Socket.io-client | Deal push, agent run updates |
 | Forms | React Hook Form + Zod | Type-safe, performant |
 | Animation | Framer Motion | Deal card animations, agent run visualizer |
+| Dark mode | next-themes | System detection, toggle, persists preference |
+| Fonts | next/font (Google Fonts) | Zero layout shift, self-hosted, no external requests |
+| Images | next/image | Auto-optimization, responsive, lazy loading |
+| Landing page effects | Magic UI | Animated hero sections, gradient backgrounds, Tailwind-native |
+
+**UI library note:** shadcn/ui is NOT an npm dependency. It is a CLI (`npx shadcn@latest add button`) that copies `.tsx` source files into `apps/web/components/ui/`. You own and modify the code freely. Components are built on Radix UI (headless accessible primitives) + Tailwind CSS.
+
+**Why not MUI / Ant Design / Mantine?** All three use CSS-in-JS or CSS Modules that conflict with Tailwind. Running two styling systems is a maintenance burden. shadcn/ui is the industry standard for Next.js + Tailwind projects.
+
+### 2.1b Next.js 15 Specific Notes
+
+Key differences from Next.js 14 that affect our implementation:
+
+| Change | Impact |
+|---|---|
+| `fetch()` is NOT cached by default | Must explicitly opt-in with `cache: 'force-cache'` or `next: { revalidate }`. Most Doppler data is real-time, so default no-cache is correct. |
+| `params` and `searchParams` are async | Page/layout/route components must `await params` before accessing values. |
+| Server Components are default | Every component in `app/` runs on the server. Only add `'use client'` for interactivity. |
+| Turbopack is stable | Use `next dev --turbo` for faster dev server. |
+| `next.config.ts` supported | Use TypeScript config file. |
 
 ### 2.2 Backend — Express.js
 
@@ -1836,6 +1858,14 @@ function isPatchNote(title: string): boolean {
 - [ ] Each package/app extends `tsconfig.base.json`
 - [ ] Configure ESLint with `@typescript-eslint/no-explicit-any: error` across monorepo
 - [ ] Configure Prettier across monorepo
+- [ ] Initialize Next.js 15 in `apps/web/` with App Router + TypeScript + Tailwind
+- [ ] Create `next.config.ts` (TypeScript config) with image remote patterns for Steam/CSFloat
+- [ ] Set up `next/font` in root layout — Inter + JetBrains Mono, CSS variables, Tailwind integration
+- [ ] Initialize shadcn/ui in `apps/web/` (`npx shadcn@latest init`), add base components
+- [ ] Set up `next-themes` for dark mode toggle with system detection
+- [ ] Create `middleware.ts` for auth redirects (unauthenticated → login, authenticated → dashboard)
+- [ ] Create route group structure: `(auth)/`, `(dashboard)/`, `(marketing)/`
+- [ ] Add `loading.tsx` skeleton files for each dashboard route segment
 - [ ] Set up Supabase project — Postgres + Auth
 - [ ] Set up Upstash Redis instance
 - [ ] Configure Railway project for API + Worker deployment (two services)
@@ -1869,11 +1899,15 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 **Week 3: Base UI + CSFloat Client**
 - [ ] Build `packages/csfloat-client`: listings search, auction fetch
 - [ ] Validate all CSFloat API responses through Zod schemas (see Section 4B.6)
-- [ ] Build dashboard layout in Next.js: sidebar nav, header, main area
-- [ ] Inventory table component: item name, wear, float, Steam price, actions
-- [ ] Basic portfolio value card (total USD value)
-- [ ] shadcn/ui theme configuration (dark mode, CS2-inspired color palette)
-- [ ] TanStack Query setup for all data fetching with typed query keys
+- [ ] Build `(dashboard)/layout.tsx` — Server Component with sidebar nav, header, main content area
+- [ ] Sidebar and header are Server Components; interactive parts (mobile menu toggle, theme switch) are small Client Components
+- [ ] Add shadcn/ui components: `npx shadcn@latest add table card badge button input select tabs dialog sheet`
+- [ ] Inventory table using shadcn/ui DataTable + TanStack Table: item name, wear, float, Steam price, actions, sortable columns
+- [ ] Basic portfolio value card (total USD value) as Server Component fetching directly
+- [ ] shadcn/ui theme configuration: CSS custom properties for CS2-inspired color palette, both light and dark themes
+- [ ] TanStack Query provider in `(dashboard)/layout.tsx` — wrap in a Client Component provider
+- [ ] Configure TanStack Query with typed query keys and default options (staleTime, refetchInterval)
+- [ ] Use `next/image` for all skin icons (Steam CDN remote pattern already configured)
 - [ ] Write unit tests for CSFloat client: listing parsing, price conversion (cents → USD), error handling
 
 **Phase 1 Deliverable:** User can log in with Steam, view their inventory with current multi-platform prices. All TypeScript strict, all external API data validated through Zod.
@@ -1900,7 +1934,10 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Deals evaluation logic: calculate effective discount after platform fees, deal score
 - [ ] Write deals to DB + emit via Socket.io to connected user
 - [ ] Socket.io setup: typed events (see Section 4B.5), auth middleware, user rooms, token refresh on reconnect
-- [ ] Deal Feed UI: real-time card stream with discount badge, float, platform
+- [ ] Deal Feed page (`(dashboard)/deals/page.tsx`) — Server Component shell with Client Component `DealFeedClient` for real-time data
+- [ ] `DealFeedClient`: TanStack Query for initial load + Socket.io for real-time push, renders DealCard stream
+- [ ] DealCard component: skin image via `next/image`, discount badge, float value, platform indicator, buy action button
+- [ ] `loading.tsx` skeleton for deals page (card grid placeholder)
 - [ ] Browser push notification on new deal
 - [ ] Write integration test: mock LLM + mock CSFloat API → verify deal created in DB + WebSocket event emitted
 
@@ -1909,7 +1946,9 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] BullMQ job: check for patches every hour
 - [ ] Build Patch Analyst agent (model: `gpt-4o`)
 - [ ] Store patch reports to DB using typed Json helpers (`toJsonField(PatchAnalysisSchema, ...)`)
-- [ ] Patch Intelligence Center UI: report list, detail view with item impact table
+- [ ] Patch Intelligence Center page (`(dashboard)/intelligence/page.tsx`) — Server Component fetches patch reports directly via Prisma
+- [ ] Patch detail view: Server Component with `generateMetadata()` for dynamic titles, `await params` for route params
+- [ ] Item impact table using TanStack Table: affected items, predicted direction, confidence, time horizon
 - [ ] Notify users with affected items in inventory or watchlist
 - [ ] Write unit test for patch scraper: parse real RSS fixture, detect new vs already-processed patches
 
@@ -1920,12 +1959,14 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 ### Phase 3 — Intelligence Suite (Weeks 7–9)
 
 **Week 7: Portfolio Advisor + Auction Sniper**
-- [ ] Build Portfolio Advisor agent with hold/sell recommendation logic
+- [ ] Build Portfolio Advisor agent with hold/sell recommendation logic (model: `gpt-4o`)
 - [ ] Daily portfolio briefing job (9am via BullMQ cron)
-- [ ] Portfolio dashboard: P&L chart (Recharts), top movers, recommendations panel
-- [ ] Build Auction Sniper agent
+- [ ] Portfolio dashboard: use `<Suspense>` boundaries to stream in P&L chart, top movers, and recommendations independently
+- [ ] P&L chart with Recharts (area chart with volume overlay)
+- [ ] Recommendations panel — Server Component fetches latest report, Client Component for interactive actions
+- [ ] Build Auction Sniper agent (model: `gpt-4o-mini`)
 - [ ] BullMQ job: scan expiring auctions every 2 minutes
-- [ ] Auction alerts UI with countdown timers
+- [ ] Auction alerts UI with countdown timers (Client Component — needs `setInterval`)
 
 **Week 8: Case Analyst + Investment Hub**
 - [ ] Build Case Analyst agent with supply/demand + patch context logic
@@ -1935,11 +1976,11 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Individual item detail modal: chart, comparable listings, patch impact history
 
 **Week 9: Freeform AI Query + Watchlist**
-- [ ] `POST /api/intelligence/ask` streaming endpoint
-- [ ] AI chat UI component with streaming response rendering
-- [ ] Watchlist CRUD: add/remove/configure price alerts
+- [ ] `POST /api/intelligence/ask` streaming endpoint (Server-Sent Events via Express)
+- [ ] AI chat Client Component with streaming response rendering — `'use client'`, consumes SSE stream
+- [ ] Watchlist CRUD: add/remove/configure price alerts (Server Actions or API routes with `useMutation`)
 - [ ] Price target alert system: check watchlist on price updates
-- [ ] Watchlist UI page with active alerts
+- [ ] Watchlist page: Server Component fetches watchlist items, Client Component for interactive filter/sort
 
 **Phase 3 Deliverable:** Full intelligence suite live. Users get daily briefings, on-demand AI analysis, and real-time watchlist alerts.
 
@@ -1948,11 +1989,17 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 ### Phase 4 — Power User Features (Weeks 10–12)
 
 **Week 10: Agent Studio**
-- [ ] Agent Studio UI: name, prompt editor (textarea), tool selector (checkboxes), schedule picker
-- [ ] Template library: 5 pre-built agent templates
+- [ ] Agent Studio UI (Client Component — heavy interactivity):
+  - shadcn/ui Input for agent name
+  - shadcn/ui Textarea for system prompt editor
+  - shadcn/ui Checkbox group for tool selection
+  - shadcn/ui Select for schedule type + Input for interval/cron
+  - React Hook Form + Zod for form validation
+- [ ] Template library: 5 pre-built agent templates (render as shadcn/ui Cards with "Use Template" action)
 - [ ] `POST /api/agents`, `PUT /api/agents/:id` → save to DB + register with BullMQ
-- [ ] Agent list page with status, last run, deals found metrics
-- [ ] Agent run history page with step-by-step reasoning viewer (collapsible steps)
+- [ ] Agent list page (`(dashboard)/agents/page.tsx`): Server Component fetches agent configs, renders TanStack Table with status, last run, deals found
+- [ ] Agent detail page (`(dashboard)/agents/[id]/page.tsx`): Server Component with `await params`, shows run history
+- [ ] Agent run step-by-step reasoning viewer: shadcn/ui Accordion for collapsible steps
 
 **Week 11: Auto-Execution**
 - [ ] Wire ActionGuard into agent job execution flow
@@ -2019,7 +2066,9 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Security audit: SQL injection via Prisma (safe), XSS in AI output (sanitize), CSRF
 
 **Week 18: Launch**
-- [ ] Landing page: hero, features, pricing tiers, waitlist/signup CTA
+- [ ] Landing page in `(marketing)/page.tsx` — Server Component for SEO, use Magic UI for animated hero effects
+- [ ] Landing page: hero section, feature showcase, pricing tiers, waitlist/signup CTA
+- [ ] Use `generateMetadata()` for SEO metadata on marketing pages (title, description, OpenGraph)
 - [ ] Stripe integration for plan subscriptions
 - [ ] Onboarding flow: Steam connect → inventory import → first agent run
 - [ ] Help documentation: what each agent does, how auto-approve works, API docs

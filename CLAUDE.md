@@ -25,7 +25,7 @@ The API server and BullMQ worker are **separate processes**. Never run agent job
 
 ## Tech Stack
 
-- **Frontend:** Next.js 15 (App Router), Tailwind CSS, shadcn/ui, TanStack Query, Zustand, Recharts, Socket.io-client, React Hook Form + Zod, Framer Motion
+- **Frontend:** Next.js 15 (App Router), Tailwind CSS, shadcn/ui (copied source, Radix primitives), TanStack Table, TanStack Query, Zustand, Recharts, Socket.io-client, React Hook Form + Zod, Framer Motion, Magic UI (landing page)
 - **Backend:** Express.js, Socket.io, Prisma, Zod validation, Pino logging
 - **Agents:** Vercel AI SDK (`ai` + `@ai-sdk/openai`), GPT-4o / GPT-4o-mini
 - **Database:** PostgreSQL (Supabase) + Redis (Upstash)
@@ -284,41 +284,383 @@ const expandedDealId = useStore((s) => s.expandedDealId);
 
 ---
 
-## Next.js Patterns
+## Next.js 15 Rules (CRITICAL)
 
-### App Router Conventions
+### Server Components vs Client Components
 
-- `page.tsx` — route page (default: Server Component)
-- `layout.tsx` — shared layout (wraps children, persists across navigations)
-- `loading.tsx` — Suspense fallback for the route segment
-- `error.tsx` — error boundary for the route segment (must be `'use client'`)
-- `not-found.tsx` — 404 UI for the route segment
+Every component in `app/` is a **Server Component by default**. This is intentional. Follow these rules:
 
-### Data Fetching
+- **Server Components** — for pages that fetch and display data. They run on the server, produce zero client JS, and can directly `await` data.
+- **Client Components** — only when the component needs: `useState`, `useEffect`, `useRef`, event handlers (`onClick`, `onChange`), browser APIs, or context providers. Mark with `'use client'` at the top of the file.
+- **Push `'use client'` to the smallest leaf component.** Never put it on a layout or page unless absolutely necessary. Extract the interactive part into its own client component and import it into the server component.
 
-- **Server Components** fetch data directly (no TanStack Query needed, no `useEffect`). Use `async` component functions or call server actions.
-- **Client Components** use TanStack Query for data that needs reactivity, background refresh, or optimistic updates.
-- **Avoid waterfalls** — fetch independent data in parallel with `Promise.all()` in Server Components, or use multiple `useQuery` calls in Client Components (TanStack Query deduplicates and parallelizes).
-- **Prefetch** likely next navigations using `router.prefetch()` or `<Link>` (which prefetches by default).
+```tsx
+// WRONG — entire page is a client component because of one interactive element
+'use client';
+export default function DealsPage() {
+  const [filter, setFilter] = useState('all');
+  const deals = /* ... */;
+  return (
+    <div>
+      <h1>Deals</h1>
+      <DealFilter value={filter} onChange={setFilter} />
+      <DealList deals={deals} />
+    </div>
+  );
+}
+
+// CORRECT — page is a server component, only the filter is client
+// app/(dashboard)/deals/page.tsx (Server Component)
+export default async function DealsPage() {
+  return (
+    <div>
+      <h1>Deals</h1>
+      <DealFeedClient />  {/* Only this is 'use client' */}
+    </div>
+  );
+}
+
+// components/deals/DealFeedClient.tsx
+'use client';
+export function DealFeedClient() {
+  const [filter, setFilter] = useState('all');
+  const { data: deals } = useQuery({ queryKey: ['deals', filter], queryFn: ... });
+  return (
+    <>
+      <DealFilter value={filter} onChange={setFilter} />
+      <DealList deals={deals} />
+    </>
+  );
+}
+```
+
+### Fetch Caching (v15 Breaking Change)
+
+**In Next.js 15, `fetch()` in Server Components is NOT cached by default.** This changed from v14. You must explicitly opt in.
+
+```tsx
+// NOT cached (default in v15) — fresh data every request
+const data = await fetch('https://api.example.com/data');
+
+// Cached — opt in explicitly
+const data = await fetch('https://api.example.com/data', {
+  cache: 'force-cache',
+});
+
+// Time-based revalidation — cached but refreshed every 15 minutes
+const data = await fetch('https://api.example.com/data', {
+  next: { revalidate: 900 },
+});
+
+// Tag-based revalidation — cached until manually invalidated
+const data = await fetch('https://api.example.com/data', {
+  next: { tags: ['inventory'] },
+});
+// Then invalidate from a Server Action:
+import { revalidateTag } from 'next/cache';
+revalidateTag('inventory');
+```
+
+For Doppler: most dashboard data is real-time (deals, prices, alerts), so the default no-cache behavior is correct. Only cache static or slow-changing data like patch reports and investment reports.
+
+### Data Fetching Strategy
+
+| Where | How | When |
+|-------|-----|------|
+| **Server Component** | Direct `async/await` or `fetch()` | Static page data, SEO-critical content, data that doesn't change per interaction |
+| **Client Component** | TanStack Query (`useQuery`) | Real-time data (deals, prices), data that refreshes in the background, paginated lists |
+| **Mutations** | Server Actions or TanStack Query `useMutation` | Form submissions, approve/reject actions, settings updates |
+
+```tsx
+// Server Component — fetches at request time, no client JS
+export default async function PatchReportPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const report = await prisma.patchReport.findUnique({ where: { id } });
+  if (!report) notFound();
+  return <PatchReportView report={report} />;
+}
+
+// Client Component — real-time data with background refresh
+'use client';
+function DealFeed() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['deals'],
+    queryFn: () => apiClient.getDeals(),
+    refetchInterval: 30_000,
+  });
+}
+```
+
+**Avoid request waterfalls** — fetch independent data in parallel:
+
+```tsx
+// WRONG — sequential, slow
+const inventory = await fetchInventory(userId);
+const deals = await fetchDeals(userId);
+const alerts = await fetchAlerts(userId);
+
+// CORRECT — parallel
+const [inventory, deals, alerts] = await Promise.all([
+  fetchInventory(userId),
+  fetchDeals(userId),
+  fetchAlerts(userId),
+]);
+```
+
+### Streaming and Suspense
+
+Use `<Suspense>` boundaries to stream in slow content without blocking the entire page:
+
+```tsx
+import { Suspense } from 'react';
+
+export default function DashboardPage() {
+  return (
+    <div>
+      <h1>Dashboard</h1>
+      {/* Portfolio value loads fast — show immediately */}
+      <Suspense fallback={<PortfolioSkeleton />}>
+        <PortfolioSummary />
+      </Suspense>
+
+      {/* Agent runs might be slow — stream in separately */}
+      <Suspense fallback={<AgentRunsSkeleton />}>
+        <RecentAgentRuns />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+Use `loading.tsx` files for automatic route-level Suspense:
+
+```
+app/(dashboard)/deals/loading.tsx   → Shows while deals/page.tsx loads
+app/(dashboard)/agents/loading.tsx  → Shows while agents/page.tsx loads
+```
+
+### Async Params and SearchParams (v15 Breaking Change)
+
+In Next.js 15, `params` and `searchParams` in page/layout/route components are **Promises** that must be awaited:
+
+```tsx
+// v14 (OLD) — synchronous access
+export default function Page({ params }: { params: { id: string } }) {
+  return <div>{params.id}</div>;
+}
+
+// v15 (CORRECT) — params is a Promise
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return <div>{id}</div>;
+}
+
+// Same for searchParams
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ filter?: string; page?: string }>;
+}) {
+  const { filter, page } = await searchParams;
+}
+```
+
+### Middleware (Auth Redirects)
+
+```typescript
+// middleware.ts (project root — NOT inside app/)
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('token');
+  const isAuthPage = request.nextUrl.pathname.startsWith('/login');
+  const isDashboard = request.nextUrl.pathname.startsWith('/');
+  const isPublicPath = ['/', '/login', '/api'].some(p =>
+    request.nextUrl.pathname === p || request.nextUrl.pathname.startsWith('/api/')
+  );
+
+  if (!isPublicPath && !token) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  if (isAuthPage && token) {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+};
+```
+
+### Metadata (SEO)
+
+Use the Metadata API in Server Components — not `<head>` tags:
+
+```tsx
+// app/(dashboard)/deals/page.tsx
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Deal Feed | Doppler',
+  description: 'Real-time CS2 skin deals across Steam and CSFloat',
+};
+
+// Dynamic metadata for pages with params
+export async function generateMetadata(
+  { params }: { params: Promise<{ id: string }> }
+): Promise<Metadata> {
+  const { id } = await params;
+  const agent = await prisma.agentConfig.findUnique({ where: { id } });
+  return {
+    title: `${agent?.name ?? 'Agent'} | Doppler`,
+  };
+}
+```
+
+### Image Optimization
+
+Always use `next/image` — never raw `<img>` tags:
+
+```tsx
+import Image from 'next/image';
+
+// Hero / above-the-fold — eager load with priority
+<Image src="/hero.webp" alt="Doppler" width={1200} height={600} priority />
+
+// Below-the-fold — lazy load (default)
+<Image src={skin.iconUrl} alt={skin.name} width={128} height={128} />
+
+// Remote images — configure allowed domains in next.config.ts
+```
+
+```typescript
+// next.config.ts
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'steamcommunity-a.akamaihd.net' },
+      { protocol: 'https', hostname: 'community.cloudflare.steamstatic.com' },
+      { protocol: 'https', hostname: 'csfloat.com' },
+    ],
+  },
+};
+```
+
+### Font Optimization
+
+Use `next/font` — never load fonts via `<link>` tags or CDN URLs:
+
+```tsx
+// app/layout.tsx
+import { Inter, JetBrains_Mono } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-inter',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-mono',
+});
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body className={inter.className}>{children}</body>
+    </html>
+  );
+}
+```
+
+Max two font families. Use the CSS variables in Tailwind config:
+
+```javascript
+// tailwind.config.ts
+fontFamily: {
+  sans: ['var(--font-inter)', ...defaultTheme.fontFamily.sans],
+  mono: ['var(--font-mono)', ...defaultTheme.fontFamily.mono],
+},
+```
+
+### next.config.ts
+
+Use TypeScript config (supported in v15):
+
+```typescript
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'steamcommunity-a.akamaihd.net' },
+      { protocol: 'https', hostname: 'community.cloudflare.steamstatic.com' },
+      { protocol: 'https', hostname: 'csfloat.com' },
+    ],
+  },
+  typescript: {
+    ignoreBuildErrors: false,
+  },
+  eslint: {
+    ignoreDuringBuilds: false,
+  },
+  logging: {
+    fetches: { fullUrl: true },
+  },
+  compiler: {
+    removeConsole: process.env.NODE_ENV === 'production',
+  },
+};
+
+export default nextConfig;
+```
 
 ### Route Organization (Doppler)
 
 ```
 app/
+  layout.tsx              → Root layout (fonts, providers, metadata)
   (auth)/
     login/page.tsx
   (dashboard)/
-    layout.tsx           → Sidebar + header layout, shared across dashboard pages
-    page.tsx             → Portfolio overview (dashboard home)
-    deals/page.tsx       → Live deal feed
-    alerts/page.tsx      → Alert history
-    intelligence/page.tsx → Patch reports + investment hub
-    agents/page.tsx      → Agent Studio
-    agents/[id]/page.tsx → Agent detail + run history
-    settings/page.tsx    → User settings
+    layout.tsx            → Sidebar + header, shared across dashboard pages
+    page.tsx              → Portfolio overview (dashboard home)
+    deals/
+      page.tsx            → Live deal feed
+      loading.tsx         → Skeleton while deals load
+    alerts/
+      page.tsx            → Alert history
+    intelligence/
+      page.tsx            → Patch reports + investment hub
+    agents/
+      page.tsx            → Agent Studio (list all agents)
+      [id]/page.tsx       → Agent detail + run history
+    settings/
+      page.tsx            → User settings
+  (marketing)/
+    layout.tsx            → Public layout (no sidebar, different header)
+    page.tsx              → Landing page (hero, features, pricing)
 ```
 
-Route groups `(auth)` and `(dashboard)` provide different layouts without affecting the URL.
+Route groups `(auth)`, `(dashboard)`, and `(marketing)` provide different layouts without affecting the URL.
+
+### App Router File Conventions
+
+| File | Purpose | Must be Client? |
+|------|---------|----------------|
+| `page.tsx` | Route page | No (default Server) |
+| `layout.tsx` | Shared layout wrapping children | No |
+| `loading.tsx` | Suspense fallback for the segment | No |
+| `error.tsx` | Error boundary for the segment | **Yes** (`'use client'`) |
+| `not-found.tsx` | 404 UI for the segment | No |
+| `template.tsx` | Like layout but re-mounts on navigation | No |
+| `route.ts` | API Route Handler (GET, POST, etc.) | N/A (server only) |
 
 ---
 
@@ -451,14 +793,44 @@ test('rejects buy when daily spend would exceed limit', async () => {
 
 ---
 
+## UI Library: shadcn/ui
+
+shadcn/ui is NOT an npm dependency. It's a CLI that copies component source code into your project. You own every line.
+
+```bash
+npx shadcn@latest init          # Initialize in apps/web/
+npx shadcn@latest add button    # Copies Button.tsx into your components/ui/
+npx shadcn@latest add dialog table card input select tabs
+```
+
+Components are built on **Radix UI** (headless accessible primitives) + **Tailwind CSS** (styling). You modify them freely — there's no upstream to break.
+
+**What shadcn/ui provides:** Button, Card, Dialog, Sheet, Drawer, Table, Tabs, Select, Input, Textarea, Checkbox, Radio, Switch, Slider, Tooltip, Popover, DropdownMenu, Command (search palette), Toast, Form, Calendar, DatePicker, and ~70 more.
+
+**What you supplement from other libraries:**
+
+| Gap | Library | Notes |
+|-----|---------|-------|
+| Advanced data tables | `@tanstack/react-table` | shadcn/ui provides a DataTable pattern wrapping this. Add sorting, filtering, pagination, column pinning on top. |
+| Charts | `recharts` | Already in stack. shadcn/ui ships a Chart component wrapping Recharts. |
+| Landing page effects | `Magic UI` (`magicui`) | Animated hero sections, gradient backgrounds, particle effects. Copy-paste, Tailwind-native, free. |
+| Date range pickers | `react-day-picker` | shadcn/ui DatePicker wraps this. |
+
+### Why Not Other Libraries
+
+- **MUI / Ant Design** — use CSS-in-JS (Emotion/cssinjs), conflict with Tailwind. Two styling systems = maintenance burden.
+- **Mantine** — uses CSS Modules, not Tailwind. Running alongside Tailwind creates dual-system friction.
+- **HeroUI (NextUI v2)** — pretty but thin on data-heavy components. No charts, basic tables. Better for marketing sites.
+
 ## Styling
 
-- **Tailwind CSS** for all styling. No CSS modules, no styled-components, no inline style objects.
-- **shadcn/ui** as the component library base. Customize, don't use raw defaults.
+- **Tailwind CSS** for all styling. No CSS modules, no styled-components, no inline style objects, no `sx` props.
+- **shadcn/ui** as the component library base. Customize aggressively — do not ship default shadcn appearance.
 - **CSS custom properties** for design tokens (colors, spacing, typography) in a global CSS file.
-- **Dark mode** via Tailwind's `dark:` variant. Both light and dark themes must feel intentional.
+- **Dark mode** via Tailwind's `dark:` variant with `next-themes`. Both light and dark themes must feel intentional — not one theme with colors inverted.
 - **Animate compositor-friendly properties only:** `transform`, `opacity`, `clip-path`. Never animate `width`, `height`, `margin`, `padding`, `top`, `left`.
 - **`prefers-reduced-motion`** — all motion must respect this media query. Use a `useReducedMotion` hook.
+- **No template aesthetics** — do not ship generic card grids, stock hero sections, or default component library appearance. Every surface should have intentional hierarchy, typography, and visual direction.
 
 ---
 
