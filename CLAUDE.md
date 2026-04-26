@@ -752,33 +752,66 @@ ActionGuard checks (in order) before any auto-execution:
 
 ## Testing
 
-- **Framework:** Vitest (unit/integration), Playwright (E2E)
-- **Run:** `turbo test` (parallel across packages)
-- **Coverage target:** 80%+ on `packages/agents`, `packages/steam-client`, `packages/csfloat-client`
-- **Priority order:**
-  1. ActionGuard — every branch (this code spends real money)
-  2. Deal score math — discount after fees calculation
-  3. External API parsers — Steam price string parsing, CSFloat cents-to-USD
-  4. Zod schema validation — correct data passes, malformed data rejects
-  5. Json helpers — `parseJsonField` / `toJsonField` type boundaries
-- **E2E:** Playwright for critical user flows (login → dashboard, deal feed, agent studio, action center)
-- **Test structure:** Arrange-Act-Assert pattern, descriptive test names that explain behavior
+### Frameworks
+
+| Layer | Tool | Why |
+|---|---|---|
+| **Unit + Integration** | **Vitest** | Native ESM + TypeScript (no transformer needed). Jest-compatible API. Vite-powered watch mode. Turborepo workspace support. |
+| **E2E** | **Playwright** | Tests Chrome + Firefox + Safari. Can mock WebSocket (critical for deal push). Free parallelism. API testing built-in. |
+
+**Not used:** Jest (ESM issues, needs transformer), Cypress (no WebSocket testing, no Safari, paid parallelism), React Testing Library (dashboard components tested via E2E instead).
+
+### Commands
+
+```bash
+turbo test                              # All unit/integration tests
+turbo test --filter=agents              # Single package
+npx playwright test                     # All E2E tests
+npx playwright test --project=chromium  # Single browser
+npx playwright test --ui                # Interactive debug mode
+```
+
+### Coverage Target
+
+80%+ on `packages/agents`, `packages/steam-client`, `packages/csfloat-client`, `packages/types`, `packages/db`.
+Frontend components covered by E2E (Playwright), not unit tests.
+
+### Priority
+
+1. ActionGuard — every branch (this code spends real money)
+2. Deal score math — discount after fees calculation
+3. External API parsers — Steam price string parsing, CSFloat cents-to-USD
+4. Zod schema validation — correct data passes, malformed data rejects
+5. Json helpers — `parseJsonField` / `toJsonField` type boundaries
+
+### Test Structure
+
+Arrange-Act-Assert pattern. Descriptive names that explain behavior.
 
 ```typescript
 test('rejects buy when daily spend would exceed limit', async () => {
   // Arrange
-  const action: TradeAction = { type: 'BUY', valueUsd: 30, ... };
-  const config: AutoApproveConfig = { dailySpendLimit: 50, ... };
-  // Seed $25 of existing spend today
-  await seedTodaySpend(userId, 25);
+  const action = { type: 'BUY' as const, valueUsd: 30 };
+  const config = { dailySpendLimit: 50, confirmAbove: 100, maxBuyPerTransaction: 50, maxSellDiscountPct: 0.85 };
+  vi.spyOn(guard as any, 'getTodaySpend').mockResolvedValue(25);
 
   // Act
-  const result = await actionGuard.evaluate(action, config, userId);
+  const result = await guard.evaluate(action, config, 'user-1');
 
   // Assert
   expect(result.approved).toBe(false);
   expect(result.reason).toBe('daily_limit_reached');
 });
+```
+
+### File Organization
+
+Tests in `__tests__/` directories adjacent to source code. E2E tests in `apps/web/e2e/`.
+
+```
+packages/agents/src/core/__tests__/actionGuard.test.ts
+packages/steam-client/src/__tests__/prices.test.ts
+apps/web/e2e/deal-feed.spec.ts
 ```
 
 ---

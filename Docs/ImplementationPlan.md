@@ -2197,15 +2197,105 @@ Implement as a BullMQ scheduled job (`data-cleanup`) that runs daily at 3am UTC.
 
 ## 14. Testing Strategy
 
-### 14.1 Test Framework
+### 14.1 Test Frameworks
 
-- **Vitest** for unit and integration tests (fast, native ESM, works with TypeScript)
-- **Playwright** for E2E tests (critical user flows)
-- Run via `turbo test` (parallel across packages)
+| Layer | Tool | Why this over alternatives |
+|---|---|---|
+| Unit + Integration | **Vitest** | Native ESM + TypeScript (no `ts-jest` transformer needed). Drop-in Jest-compatible API (`describe`, `it`, `expect`, `vi.fn()`). Vite-powered watch mode is near-instant. Turborepo workspace support built-in. |
+| E2E | **Playwright** | Tests Chrome, Firefox, **and Safari/WebKit**. Can intercept and mock WebSocket connections (critical for testing deal push). Free parallelism across browsers. API testing built-in via `request` context. Native TypeScript. |
 
-### 14.2 What to Test (By Priority)
+**What we don't use and why:**
 
-**Unit Tests (every package):**
+| Tool | Why not |
+|---|---|
+| Jest | Requires `ts-jest` or `@swc/jest` for TypeScript. ESM support is fragile (`experimental-vm-modules`). Slower in monorepos. Vitest is API-compatible — learning Vitest means you already know Jest. |
+| Cypress | Cannot test WebSocket connections (critical for Doppler's real-time deal push). No Safari/WebKit support. Parallelism requires paid Cypress Cloud. |
+| React Testing Library | We don't do shallow component unit tests. Dashboard components are data-heavy and better tested via E2E. Business logic lives in `packages/*` and is tested via Vitest. RTL sits in a middle ground that adds maintenance cost for little signal. |
+| Supertest | For Express route testing. Vitest + direct `fetch()` calls or Playwright's `request` context cover this. One less dependency. |
+
+### 14.2 Setup
+
+```bash
+# Root package.json — shared Vitest config
+turbo test                    # Run all unit/integration tests across packages
+turbo test --filter=agents    # Run tests in packages/agents only
+
+# Playwright — E2E from apps/web
+npx playwright test                     # Run all E2E tests
+npx playwright test --project=chromium  # Single browser
+npx playwright test --ui                # Interactive UI mode for debugging
+```
+
+**Vitest workspace config** (root level):
+
+```typescript
+// vitest.workspace.ts
+export default [
+  'packages/agents',
+  'packages/steam-client',
+  'packages/csfloat-client',
+  'packages/db',
+  'packages/types',
+  'apps/api',
+  'apps/worker',
+];
+```
+
+**Per-package Vitest config:**
+
+```typescript
+// packages/agents/vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      thresholds: {
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80,
+      },
+    },
+  },
+});
+```
+
+**Playwright config:**
+
+```typescript
+// apps/web/playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  fullyParallel: true,
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+  ],
+  webServer: {
+    command: 'turbo dev',
+    port: 3000,
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+### 14.3 What to Test (By Priority)
+
+**Unit Tests (Vitest — every package):**
 
 | Module | What to test | Why it matters |
 |---|---|---|
@@ -2217,24 +2307,164 @@ Implement as a BullMQ scheduled job (`data-cleanup`) that runs daily at 3am UTC.
 | `json-helpers` | `parseJsonField` returns typed data, throws on invalid shapes. `toJsonField` rejects invalid writes. | Prevents `any` from leaking through Prisma Json fields. |
 | Patch scraper parser | Parse real Steam news RSS fixture, identify patch notes vs non-patch posts | False positives trigger unnecessary agent runs (cost). False negatives miss real patches. |
 
-**Integration Tests:**
+**Example unit test (Vitest):**
 
-| Flow | What to test |
-|---|---|
-| Auth flow | Steam callback → user creation → JWT issued → middleware accepts token |
-| Deal Hunter job | Mock LLM responses + mock CSFloat/Steam APIs → verify deal created in DB → verify WebSocket event shape |
-| Agent run lifecycle | Create run → log steps → handle failure → verify DB state matches expected status |
-| API routes | Each CRUD route: correct response shape, auth required, proper error codes |
+```typescript
+// packages/agents/src/core/__tests__/actionGuard.test.ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ActionGuard } from '../ActionGuard';
 
-**E2E Tests (Playwright, Phase 3+):**
+describe('ActionGuard', () => {
+  const guard = new ActionGuard();
+  const baseConfig = {
+    confirmAbove: 25,
+    maxBuyPerTransaction: 10,
+    dailySpendLimit: 50,
+    maxSellDiscountPct: 0.85,
+  } as const;
 
-| Flow | What to verify |
-|---|---|
-| Login → Dashboard | Steam OAuth redirect → callback → dashboard loads with inventory |
-| Deal Feed | Deal appears in real-time when WebSocket event fires |
-| Agent Studio | Create agent → appears in list → trigger manual run → run appears in history |
-| Action Center | Pending action appears → approve → status updates |
+  it('requires manual approval when value exceeds confirm threshold', async () => {
+    const action = { type: 'BUY' as const, valueUsd: 30 };
+    const result = await guard.evaluate(action, baseConfig, 'user-1');
 
-### 14.3 Coverage Target
+    expect(result.approved).toBe(false);
+    expect(result.requiresUserApproval).toBe(true);
+    expect(result.reason).toBe('above_confirm_threshold');
+  });
 
-80%+ on `packages/agents` and `packages/steam-client` and `packages/csfloat-client`. These packages contain the business logic and external API interfaces where bugs have the highest impact. Frontend components are tested via E2E flows rather than shallow unit tests.
+  it('rejects buy when value exceeds per-transaction limit', async () => {
+    const action = { type: 'BUY' as const, valueUsd: 15 };
+    const result = await guard.evaluate(action, baseConfig, 'user-1');
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('exceeds_per_transaction_limit');
+  });
+
+  it('rejects when daily spend would exceed limit', async () => {
+    // Mock today's existing spend at $45
+    vi.spyOn(guard as any, 'getTodaySpend').mockResolvedValue(45);
+
+    const action = { type: 'BUY' as const, valueUsd: 8 };
+    const result = await guard.evaluate(action, baseConfig, 'user-1');
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('daily_limit_reached');
+  });
+
+  it('rejects sell below price floor', async () => {
+    const action = { type: 'SELL' as const, valueUsd: 8, steamPriceUsd: 12 };
+    // Floor is 85% of $12 = $10.20, selling at $8 is below floor
+    const result = await guard.evaluate(action, baseConfig, 'user-1');
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('below_sell_floor');
+  });
+
+  it('auto-approves when all limits are within bounds', async () => {
+    vi.spyOn(guard as any, 'getTodaySpend').mockResolvedValue(0);
+
+    const action = { type: 'BUY' as const, valueUsd: 8 };
+    const result = await guard.evaluate(action, baseConfig, 'user-1');
+
+    expect(result.approved).toBe(true);
+    expect(result.reason).toBe('within_limits');
+  });
+});
+```
+
+**Integration Tests (Vitest — apps/api, apps/worker):**
+
+| Flow | What to test | How |
+|---|---|---|
+| Auth flow | Steam callback → user creation → JWT issued → middleware accepts token | Vitest + mock Steam OpenID response + real Prisma (test database) |
+| Deal Hunter job | Mock LLM responses + mock CSFloat/Steam APIs → verify deal created in DB → verify WebSocket event shape | Vitest + `vi.mock()` for LLM and external APIs + real BullMQ (test Redis) |
+| Agent run lifecycle | Create run → log steps → handle failure → verify DB state matches expected status | Vitest + real Prisma (test database) |
+| API routes | Each CRUD route: correct response shape, auth required, proper error codes | Vitest + `fetch()` against running Express server or directly invoke route handlers |
+
+**E2E Tests (Playwright — apps/web, Phase 3+):**
+
+| Flow | What to verify | Why Playwright specifically |
+|---|---|---|
+| Login → Dashboard | Steam OAuth redirect → callback → dashboard loads with inventory | Tests full auth redirect chain across pages |
+| Deal Feed (real-time) | Deal appears in real-time when WebSocket event fires | **Playwright can intercept WebSocket** — mock a Socket.io event, verify card appears |
+| Agent Studio | Create agent → appears in list → trigger manual run → run appears in history | Tests form submission → API → database → UI update |
+| Action Center | Pending action appears → approve → status updates | Tests time-sensitive UI with countdown timers |
+| Cross-browser | All critical flows in Chrome + Firefox + Safari | Playwright runs all three for free, in parallel |
+
+**Example E2E test (Playwright):**
+
+```typescript
+// apps/web/e2e/deal-feed.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('deal card appears when WebSocket event fires', async ({ page }) => {
+  await page.goto('/deals');
+  await expect(page.getByRole('heading', { name: 'Deals' })).toBeVisible();
+
+  // Inject a mock WebSocket event
+  await page.evaluate(() => {
+    const socket = (window as any).__DOPPLER_SOCKET__;
+    socket.emit('deal:new', {
+      dealId: 'test-deal-1',
+      itemName: 'AK-47 | Redline (Field-Tested)',
+      platform: 'CSFLOAT',
+      listedPrice: 28.50,
+      steamPrice: 38.00,
+      discountPct: 0.25,
+      floatValue: 0.15,
+      dealScore: 72,
+      expiresAt: null,
+      listingUrl: 'https://csfloat.com/listing/test',
+    });
+  });
+
+  // Verify the deal card appeared
+  await expect(page.getByText('AK-47 | Redline')).toBeVisible();
+  await expect(page.getByText('25%')).toBeVisible();
+});
+```
+
+### 14.4 Coverage Target
+
+80%+ on `packages/agents`, `packages/steam-client`, and `packages/csfloat-client`. These packages contain the business logic and external API interfaces where bugs have the highest impact.
+
+| Package | Coverage target | Rationale |
+|---|---|---|
+| `packages/agents` (ActionGuard, deal scoring) | 80%+ | Decides whether to spend real money |
+| `packages/steam-client` | 80%+ | Parses external API data — silent bugs if wrong |
+| `packages/csfloat-client` | 80%+ | Price conversion (cents → USD) — off-by-100x risk |
+| `packages/types` (Zod schemas) | 80%+ | Boundary validation — rejects bad data |
+| `packages/db` (json-helpers) | 80%+ | Prevents `any` leaking through Prisma Json |
+| `apps/api` (routes) | 60%+ | CRUD is lower risk, but auth + error handling matter |
+| `apps/web` (components) | Covered by E2E | Dashboard components tested via Playwright, not unit tests |
+
+### 14.5 Test File Organization
+
+```
+packages/agents/
+  src/
+    core/
+      ActionGuard.ts
+      __tests__/
+        actionGuard.test.ts
+    tools/
+      steamTools.ts
+      __tests__/
+        steamTools.test.ts
+
+apps/api/
+  src/
+    routes/
+      agents.ts
+      __tests__/
+        agents.test.ts
+
+apps/web/
+  e2e/
+    auth.spec.ts
+    deal-feed.spec.ts
+    agent-studio.spec.ts
+    action-center.spec.ts
+```
+
+Tests live in `__tests__/` directories adjacent to the code they test (unit/integration). E2E tests live in `apps/web/e2e/`.
