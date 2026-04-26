@@ -1381,6 +1381,278 @@ export async function getPriceOverview(itemName: string): Promise<SteamPriceResp
 
 ## 5. API Routes — Full Specification
 
+### 5.0 Typed Route Contracts
+
+Every API route defines its contract using Zod. A single schema provides both **runtime validation** (rejects malformed requests) and **compile-time types** (handler knows exact shapes). No `any`, no manual `as` casts, no trusting `req.body`.
+
+```typescript
+// packages/types/src/contracts/agents.contracts.ts
+
+import { z } from 'zod';
+
+// ── Contract: POST /api/agents ───────────────────
+export const CreateAgentContract = {
+  params: z.object({}),
+  query: z.object({}),
+  body: z.object({
+    name: z.string().min(1).max(100),
+    systemPrompt: z.string().min(10).max(5000),
+    tools: z.array(z.string()).min(1),
+    scheduleType: z.enum(['INTERVAL', 'CRON', 'EVENT', 'MANUAL']),
+    scheduleValue: z.string(),
+    autoApproveEnabled: z.boolean().optional().default(false),
+    maxBuyOverride: z.number().positive().optional(),
+  }),
+  response: z.object({
+    id: z.string(),
+    name: z.string(),
+    type: z.string(),
+    enabled: z.boolean(),
+    createdAt: z.string().datetime(),
+  }),
+} as const;
+
+// ── Contract: GET /api/agents/:id/history ────────
+export const GetAgentHistoryContract = {
+  params: z.object({
+    id: z.string(),
+  }),
+  query: z.object({
+    limit: z.coerce.number().int().positive().max(100).optional().default(20),
+  }),
+  body: z.object({}),
+  response: z.array(z.object({
+    id: z.string(),
+    status: z.enum(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime().nullable(),
+    dealsFound: z.number(),
+    actionsCount: z.number(),
+    summary: z.string().nullable(),
+  })),
+} as const;
+
+// ── Contract: GET /api/inventory ─────────────────
+export const GetInventoryContract = {
+  params: z.object({}),
+  query: z.object({
+    includeNonTradable: z.coerce.boolean().optional().default(false),
+  }),
+  body: z.object({}),
+  response: z.array(SteamInventoryItemSchema),
+} as const;
+```
+
+#### Route Contract Type Helpers
+
+```typescript
+// packages/types/src/contracts/helpers.ts
+
+import { z } from 'zod';
+
+/**
+ * Defines the shape of a route contract.
+ * Every contract has params, query, body (all Zod schemas) and a response schema.
+ */
+export interface RouteContract {
+  readonly params: z.ZodTypeAny;
+  readonly query: z.ZodTypeAny;
+  readonly body: z.ZodTypeAny;
+  readonly response: z.ZodTypeAny;
+}
+
+/** Extract the inferred types from a route contract. */
+export type InferContract<T extends RouteContract> = {
+  readonly params: z.infer<T['params']>;
+  readonly query: z.infer<T['query']>;
+  readonly body: z.infer<T['body']>;
+  readonly response: z.infer<T['response']>;
+};
+```
+
+#### Validated Route Handler Factory
+
+```typescript
+// apps/api/src/lib/createRoute.ts
+
+import { Request, Response, RequestHandler } from 'express';
+import { z } from 'zod';
+import type { RouteContract, InferContract } from '@doppler/types';
+import type { ApiResponse, ApiError } from '@doppler/types';
+
+/**
+ * Creates a type-safe, validated Express route handler.
+ *
+ * - Validates params, query, and body against the contract's Zod schemas at runtime
+ * - Returns 400 with structured error if validation fails
+ * - Handler receives fully typed, validated data — no `any`, no `as` casts
+ * - Response is typed to match the contract
+ */
+export function createRoute<T extends RouteContract>(
+  contract: T,
+  handler: (
+    data: {
+      readonly params: z.infer<T['params']>;
+      readonly query: z.infer<T['query']>;
+      readonly body: z.infer<T['body']>;
+      readonly user: { readonly id: string; readonly steamId: string; readonly plan: string };
+    },
+    res: Response<ApiResponse<z.infer<T['response']>> | ApiError>,
+  ) => Promise<void>,
+): RequestHandler {
+  return async (req: Request, res: Response) => {
+    // Validate params
+    const paramsResult = contract.params.safeParse(req.params);
+    if (!paramsResult.success) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid params: ${paramsResult.error.issues.map(i => i.message).join(', ')}`,
+      } satisfies ApiError);
+      return;
+    }
+
+    // Validate query
+    const queryResult = contract.query.safeParse(req.query);
+    if (!queryResult.success) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid query: ${queryResult.error.issues.map(i => i.message).join(', ')}`,
+      } satisfies ApiError);
+      return;
+    }
+
+    // Validate body
+    const bodyResult = contract.body.safeParse(req.body);
+    if (!bodyResult.success) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid body: ${bodyResult.error.issues.map(i => i.message).join(', ')}`,
+      } satisfies ApiError);
+      return;
+    }
+
+    try {
+      await handler(
+        {
+          params: paramsResult.data,
+          query: queryResult.data,
+          body: bodyResult.data,
+          user: req.user,
+        },
+        res,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      res.status(500).json({ success: false, error: message } satisfies ApiError);
+    }
+  };
+}
+```
+
+#### Usage in Route Files
+
+```typescript
+// apps/api/src/routes/agents.ts
+
+import { Router } from 'express';
+import { prisma } from '@doppler/db';
+import { createRoute } from '../lib/createRoute';
+import { CreateAgentContract, GetAgentHistoryContract } from '@doppler/types';
+
+const router = Router();
+
+// POST /api/agents — create custom agent
+// req.body is FULLY TYPED and VALIDATED. No `as any`, no manual parsing.
+router.post(
+  '/',
+  createRoute(CreateAgentContract, async ({ body, user }, res) => {
+    // body.name is string (validated, min 1, max 100)
+    // body.tools is string[] (validated, min 1 item)
+    // body.scheduleType is 'INTERVAL' | 'CRON' | 'EVENT' | 'MANUAL' (validated)
+    // user.id is string, user.plan is Plan
+
+    const allowedTools = getAllowedTools(user.plan);
+    const invalidTools = body.tools.filter((t) => !allowedTools.includes(t));
+    if (invalidTools.length > 0) {
+      res.status(400).json({
+        success: false,
+        error: `Tools not available on your plan: ${invalidTools.join(', ')}`,
+      });
+      return;
+    }
+
+    const agent = await prisma.agentConfig.create({
+      data: {
+        userId: user.id,
+        name: body.name,
+        type: 'CUSTOM',
+        systemPrompt: body.systemPrompt,
+        tools: body.tools,
+        scheduleType: body.scheduleType,
+        scheduleValue: body.scheduleValue,
+        isCustom: true,
+        autoApproveEnabled: body.autoApproveEnabled,
+        maxBuyOverride: body.maxBuyOverride,
+      },
+    });
+
+    res.status(201).json({ success: true, data: agent });
+  }),
+);
+
+// GET /api/agents/:id/history
+// params.id and query.limit are validated and typed
+router.get(
+  '/:id/history',
+  createRoute(GetAgentHistoryContract, async ({ params, query, user }, res) => {
+    const runs = await prisma.agentRun.findMany({
+      where: { agentConfigId: params.id, userId: user.id },
+      orderBy: { startedAt: 'desc' },
+      take: query.limit,
+      include: { actions: true },
+    });
+    res.json({ success: true, data: runs });
+  }),
+);
+
+export { router as agentsRouter };
+```
+
+#### What This Gives Us
+
+| Benefit | How |
+|---------|-----|
+| **Zero `any` in route handlers** | `body`, `params`, `query` are all typed from the Zod schemas |
+| **Runtime validation** | Malformed requests get 400 with a structured error before the handler runs |
+| **Single source of truth** | Zod schema defines the shape once — TypeScript type is inferred, not manually written |
+| **Consistent error responses** | `createRoute` wraps all handlers in try/catch, always returns `ApiError` on failure |
+| **Consistent success responses** | Response type is `ApiResponse<T>` where `T` comes from the contract |
+| **Discoverable API** | All contracts in `@doppler/types/contracts/` — frontend devs can see exact request/response shapes |
+| **Shared with frontend** | Frontend imports the same contracts to type its API client calls |
+
+#### Frontend Usage (Shared Contracts)
+
+```typescript
+// apps/web/lib/api-client.ts
+
+import type { InferContract } from '@doppler/types';
+import { CreateAgentContract, GetInventoryContract } from '@doppler/types';
+
+type CreateAgentBody = InferContract<typeof CreateAgentContract>['body'];
+type CreateAgentResponse = InferContract<typeof CreateAgentContract>['response'];
+
+async function createAgent(data: CreateAgentBody): Promise<CreateAgentResponse> {
+  const res = await fetch('/api/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const json: unknown = await res.json();
+  // Validate response matches contract
+  return CreateAgentContract.response.parse(json);
+}
+```
+
 ### 5.1 Express Router Setup
 
 ```typescript

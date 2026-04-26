@@ -666,13 +666,53 @@ Route groups `(auth)`, `(dashboard)`, and `(marketing)` provide different layout
 
 ## Code Patterns
 
+### Route Contracts (CRITICAL)
+
+Every API route is defined as a **Zod contract** in `@doppler/types/contracts/`. The contract defines the exact shape of params, query, body, and response. A single Zod schema provides both runtime validation AND compile-time types.
+
+**Never write a route handler with untyped `req.body`.** Always use `createRoute()`.
+
+```typescript
+// 1. Define contract in @doppler/types/contracts/agents.contracts.ts
+export const CreateAgentContract = {
+  params: z.object({}),
+  query: z.object({}),
+  body: z.object({
+    name: z.string().min(1).max(100),
+    systemPrompt: z.string().min(10),
+    tools: z.array(z.string()).min(1),
+    scheduleType: z.enum(['INTERVAL', 'CRON', 'EVENT', 'MANUAL']),
+  }),
+  response: z.object({ id: z.string(), name: z.string() }),
+} as const;
+
+// 2. Use in route handler via createRoute() — validates automatically
+router.post('/', createRoute(CreateAgentContract, async ({ body, user }, res) => {
+  // body.name is string (validated, min 1, max 100) — NOT any
+  // body.tools is string[] (validated) — NOT any
+  const agent = await prisma.agentConfig.create({ data: { userId: user.id, ...body } });
+  res.status(201).json({ success: true, data: agent });
+}));
+
+// 3. Frontend imports the same contract for typed API calls
+import type { InferContract } from '@doppler/types';
+type CreateAgentBody = InferContract<typeof CreateAgentContract>['body'];
+```
+
+`createRoute()` in `apps/api/src/lib/createRoute.ts`:
+- Validates params, query, body against Zod schemas at runtime
+- Returns 400 with structured `ApiError` if validation fails
+- Wraps handler in try/catch, returns 500 `ApiError` on unhandled errors
+- Handler receives typed, validated data — zero `any`
+- Response is typed to match the contract's response schema
+
 ### API Responses
 
-All API endpoints use the typed envelope from `@doppler/types/api`:
+All routes return the typed envelope:
 
 ```typescript
 interface ApiResponse<T> { readonly success: true; readonly data: T }
-interface ApiError { readonly success: false; readonly error: string }
+interface ApiError { readonly success: false; readonly error: string; readonly code?: string }
 interface PaginatedResponse<T> {
   readonly success: true;
   readonly data: readonly T[];
@@ -691,9 +731,7 @@ const validated = SteamPriceResponseSchema.parse(response.data);
 ### Prisma Json Fields
 
 ```typescript
-// Reading — parse from untyped Json into typed object
 const data = parseJsonField(DealDataSchema, row.dealData, 'Deal.dealData');
-// Writing — validate before storing
 await prisma.deal.create({ data: { dealData: toJsonField(DealDataSchema, value) } });
 ```
 
@@ -701,31 +739,15 @@ await prisma.deal.create({ data: { dealData: toJsonField(DealDataSchema, value) 
 
 Socket.io uses typed event maps from `@doppler/types/socket-events`. Wrong event names or payload shapes are compile errors.
 
-```typescript
-const io = new SocketServer<ClientToServerEvents, ServerToClientEvents>(httpServer);
-```
-
 ### Express Request
 
 `req.user` is typed via declaration merging in `apps/api/src/types/express.d.ts`. The `authenticate` middleware populates `{ id, steamId, plan }`.
 
 ### Error Handling
 
-- **API routes:** try/catch at the route level, return typed `ApiError`. Never let unhandled exceptions crash the process.
-- **Agent runs:** try/catch wraps the entire `AgentRunner.run()` call. Partial results (deals found before failure) are preserved. Failed runs are logged with the error message.
-- **External API calls:** handle rate limit errors (429) with exponential backoff. Handle network errors with retry. Never silently swallow errors.
-
-```typescript
-// CORRECT — explicit error handling in route
-router.get('/:id', async (req, res) => {
-  const deal = await prisma.deal.findUnique({ where: { id: req.params.id, userId: req.user.id } });
-  if (!deal) {
-    res.status(404).json({ success: false, error: 'Deal not found' } satisfies ApiError);
-    return;
-  }
-  res.json({ success: true, data: deal } satisfies ApiResponse<Deal>);
-});
-```
+- **API routes:** Handled by `createRoute()` — try/catch wraps every handler, returns `ApiError`. Never let unhandled exceptions crash the process.
+- **Agent runs:** try/catch wraps `AgentRunner.run()`. Partial results are preserved. Failed runs logged with error.
+- **External APIs:** Handle 429 with exponential backoff. Handle network errors with retry. Never silently swallow.
 
 ---
 

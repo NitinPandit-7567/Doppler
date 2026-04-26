@@ -109,6 +109,7 @@ Phase 1 has three distinct workstreams. Each builds on the previous.
 - [ ] Install dev: `@types/express`, `@types/cors`, `tsx`, `nodemon`
 - [ ] Create `apps/api/src/server.ts` — minimal Express server with health check route
 - [ ] Create `apps/api/src/types/express.d.ts` — typed `req.user` declaration merging
+- [ ] Create `apps/api/src/lib/createRoute.ts` — validated route handler factory (see ImplementationPlan Section 5.0)
 - [ ] Add `dev` script using `tsx watch src/server.ts`
 - [ ] Verify: `turbo dev --filter=api` starts Express on localhost:4000
 
@@ -138,6 +139,10 @@ Phase 1 has three distinct workstreams. Each builds on the previous.
 - [ ] Create `packages/types/src/market.ts` — `SteamInventoryItemSchema`, `CSFloatListingSchema`, `SteamPriceResponseSchema` (Zod schemas + inferred types)
 - [ ] Create `packages/types/src/agents.ts` — `AgentStepSchema`, `TradeActionPayloadSchema`, `PatchAnalysisSchema`, `AffectedItemSchema`
 - [ ] Create `packages/types/src/socket-events.ts` — `ServerToClientEvents`, `ClientToServerEvents`, all event payload interfaces
+- [ ] Create `packages/types/src/contracts/helpers.ts` — `RouteContract` interface, `InferContract<T>` type helper
+- [ ] Create `packages/types/src/contracts/inventory.contracts.ts` — `GetInventoryContract`, `GetInventoryValueContract`, `SyncInventoryContract`
+- [ ] Create `packages/types/src/contracts/auth.contracts.ts` — `SteamCallbackContract`
+- [ ] Create `packages/types/src/contracts/market.contracts.ts` — `GetPriceContract`, `GetListingsContract`
 
 #### Packages — DB (Prisma)
 - [ ] Create `packages/db/` with `package.json` (`name: "@doppler/db"`)
@@ -236,7 +241,12 @@ doppler/
 │   │   │   ├── api.ts
 │   │   │   ├── market.ts
 │   │   │   ├── agents.ts
-│   │   │   └── socket-events.ts
+│   │   │   ├── socket-events.ts
+│   │   │   └── contracts/
+│   │   │       ├── helpers.ts
+│   │   │       ├── auth.contracts.ts
+│   │   │       ├── inventory.contracts.ts
+│   │   │       └── market.contracts.ts
 │   │   ├── vitest.config.ts
 │   │   ├── tsconfig.json
 │   │   └── package.json
@@ -346,11 +356,12 @@ doppler/
   - Zod validation rejects malformed Steam responses
 
 #### Inventory API Route
-- [ ] Create `apps/api/src/routes/inventory.ts`:
-  - `GET /api/inventory` — calls `steamClient.getInventory(req.user.steamId)`, returns typed `ApiResponse<SteamInventoryItem[]>`
-  - `GET /api/inventory/value` — calls inventory + price for each item, sums total USD value
-  - `POST /api/inventory/sync` — force-refresh (bypass cache)
+- [ ] Create `apps/api/src/routes/inventory.ts` — all routes use `createRoute()` with Zod contracts:
+  - `GET /api/inventory` — uses `GetInventoryContract`, calls `steamClient.getInventory()`, params/query validated
+  - `GET /api/inventory/value` — uses `GetInventoryValueContract`, calls inventory + price for each item, sums total USD
+  - `POST /api/inventory/sync` — uses `SyncInventoryContract`, force-refresh (bypass cache)
 - [ ] Write integration test: mock Steam API responses → verify correct response shape and status codes
+- [ ] Write unit test for `createRoute`: valid body passes, invalid body returns 400 with `ApiError`, unhandled throw returns 500
 
 #### Frontend Auth Integration
 - [ ] Create `apps/web/lib/api-client.ts` — typed fetch wrapper that includes auth token
