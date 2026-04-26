@@ -957,5 +957,8 @@ npx shadcn@latest add [name] # Add a shadcn/ui component
 
 ## Key Docs
 
-- `Docs/ImplementationPlan.md` — full engineering reference (schema, code, phases, TypeScript strategy, testing strategy)
+- `Docs/ImplementationPlan.md` — master engineering reference (schema, code, architecture, TypeScript strategy, testing strategy)
 - `Docs/ProductVision.md` — product strategy, features, monetization, competitive landscape
+- `Docs/phases/Phase1-Foundation.md` — **current work order** (Weeks 1-3, Sub-Phases 1A/1B/1C)
+
+Phase files are self-contained work orders with checklists, file lists, code patterns, and acceptance criteria. Read the relevant phase file instead of the full ImplementationPlan.md when executing.
