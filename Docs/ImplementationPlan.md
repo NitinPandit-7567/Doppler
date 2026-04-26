@@ -86,12 +86,12 @@ All packages and apps extend this base config. Strict mode is non-negotiable.
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
@@ -108,6 +108,8 @@ Key flags:
 - `strict: true` — enables `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, and all other strict checks
 - `noUncheckedIndexedAccess: true` — array/object index access returns `T | undefined` instead of `T`, prevents runtime crashes on missing keys
 - `noImplicitOverride: true` — forces explicit `override` keyword on method overrides
+- `exactOptionalPropertyTypes: true` — prevents `{ field: undefined }` where `field?` is declared, catches Prisma bugs where `undefined` means "don't update" vs `null` means "set to null"
+- `module: "ESNext"` + `moduleResolution: "bundler"` — modern standard for Turborepo monorepos with Next.js/Vite. Does not require `.js` extensions on imports. `NodeNext` was considered but requires explicit extensions on every relative import, incompatible with bundler-first workflows.
 
 ---
 
@@ -216,7 +218,7 @@ datasource db {
 // ─── USERS ───────────────────────────────────────────────
 
 model User {
-  id              String    @id @default(cuid())
+  id              String    @id  // Set explicitly to Supabase Auth user ID on creation — no @default
   steamId         String    @unique
   email           String?   @unique
   displayName     String
@@ -595,7 +597,7 @@ export class AgentRunner {
           toolResults: step.toolResults,
           usage: step.usage,
           finishReason: step.finishReason,
-          timestamp: new Date(),
+          timestamp: new Date().toISOString(),
         };
         steps.push(agentStep);
 
@@ -642,10 +644,14 @@ User's watchlist items: ${context.watchlistItems?.join(', ') ?? 'none'}
 ```typescript
 // packages/agents/src/core/ActionGuard.ts
 
-import { prisma } from '@doppler/db';
-import { TradeAction, ApprovalResult, AutoApproveConfig } from '@doppler/types';
+import type { PrismaClient } from '@prisma/client';
+import type { TradeAction, ApprovalResult, AutoApproveConfig } from '@doppler/types';
+
+type ActionDb = Pick<PrismaClient, 'agentAction'>;
 
 export class ActionGuard {
+  constructor(private readonly db: ActionDb) {}
+
   async evaluate(
     action: TradeAction,
     config: AutoApproveConfig,
@@ -701,9 +707,9 @@ export class ActionGuard {
 
   private async getTodaySpend(userId: string): Promise<number> {
     const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    startOfDay.setUTCHours(0, 0, 0, 0);
 
-    const result = await prisma.agentAction.aggregate({
+    const result = await this.db.agentAction.aggregate({
       where: {
         userId,
         actionType: 'BUY',
@@ -743,14 +749,20 @@ export const getSteamPriceHistory = tool({
   execute: async ({ itemName, days }) => steamClient.getPriceHistory(itemName, days),
 });
 
-export const getUserInventory = tool({
-  description: 'Get the current Steam inventory for the authenticated user. Returns all tradable CS2 items.',
-  parameters: z.object({
-    includeNonTradable: z.boolean().default(false),
-  }),
-  execute: async ({ includeNonTradable }, { userId }) =>
-    steamClient.getInventory(userId, includeNonTradable),
-});
+// Tools that need user context use a factory — Vercel AI SDK tool execute
+// receives (args, { toolCallId, messages, abortSignal }), NOT user context.
+export function createUserSteamTools(userId: string) {
+  return {
+    getUserInventory: tool({
+      description: 'Get the current Steam inventory for the authenticated user. Returns all tradable CS2 items.',
+      parameters: z.object({
+        includeNonTradable: z.boolean().default(false),
+      }),
+      execute: async ({ includeNonTradable }) =>
+        steamClient.getInventory(userId, includeNonTradable),
+    }),
+  };
+}
 ```
 
 ```typescript
