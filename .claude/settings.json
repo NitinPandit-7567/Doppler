@@ -32,21 +32,37 @@
     "PreToolUse": [
       {
         "matcher": "Write",
-        "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const i=JSON.parse(d);const c=i.tool_input?.content||'';const lines=c.split('\\n').length;if(lines>400){console.error('[Hook] BLOCKED: File exceeds 400 lines ('+lines+' lines). Split into smaller modules.');process.exit(2)}})\"",
-        "description": "Block writes that exceed 400 lines (CLAUDE.md file size limit)"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const i=JSON.parse(d);const c=i.tool_input?.content||'';const lines=c.split('\\n').length;if(lines>400){console.error('[Hook] BLOCKED: File exceeds 400 lines ('+lines+' lines). Split into smaller modules.');process.exit(2)}})\"",
+            "description": "Block writes that exceed 400 lines"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "command": "FILE=\"$CLAUDE_FILE_PATH\"; if echo \"$FILE\" | grep -qE '\\.(ts|tsx)$'; then cd /Users/nitinpandit/Custom/Doppler && npx prettier --write \"$FILE\" 2>/dev/null; fi",
-        "description": "Auto-format TypeScript files with Prettier after edits"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_FILE_PATH\"; if echo \"$FILE\" | grep -qE '\\.(ts|tsx)$'; then cd /Users/nitinpandit/Custom/Doppler && npx prettier --write \"$FILE\" 2>/dev/null; fi",
+            "description": "Auto-format TypeScript files with Prettier after edits"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "command": "cd /Users/nitinpandit/Custom/Doppler && npx tsc --noEmit --pretty false 2>&1 | head -20 || true",
-        "description": "Type-check the project when the session ends"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/nitinpandit/Custom/Doppler && npx tsc --noEmit --pretty false 2>&1 | head -20 || true",
+            "description": "Type-check the project when the session ends"
+          }
+        ]
       }
     ]
   }

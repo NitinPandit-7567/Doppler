@@ -2199,6 +2199,7 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Add `agent_configs`, `agent_runs`, `agent_actions` to Prisma schema
 - [ ] Write unit tests for `ActionGuard`: all 5 branch conditions, edge cases (exactly at limit, zero spend, sell below floor)
 - [ ] Write unit tests for deal score calculation logic
+- [ ] Write unit tests for `AgentRunner`: step logging works, maxSteps respected, error captured in run record, partial results preserved on failure
 
 **Week 5: Deal Hunter + Alerts**
 - [ ] Build Deal Hunter agent with full prompt and tool set (model: `gpt-4o-mini`)
@@ -2239,6 +2240,8 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Build Auction Sniper agent (model: `gpt-4o-mini`)
 - [ ] BullMQ job: scan expiring auctions every 2 minutes
 - [ ] Auction alerts UI with countdown timers (Client Component — needs `setInterval`)
+- [ ] Write integration test for Portfolio Advisor: mock LLM → verify recommendation format matches Zod schema, verify report saved to DB
+- [ ] Write integration test for Auction Sniper: mock CSFloat auctions API → verify expiring deals surfaced correctly
 
 **Week 8: Case Analyst + Investment Hub**
 - [ ] Build Case Analyst agent with supply/demand + patch context logic
@@ -2253,6 +2256,8 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Watchlist CRUD: add/remove/configure price alerts (Server Actions or API routes with `useMutation`)
 - [ ] Price target alert system: check watchlist on price updates
 - [ ] Watchlist page: Server Component fetches watchlist items, Client Component for interactive filter/sort
+- [ ] Write integration test for streaming endpoint: verify SSE format (`data: {...}\n\n`), verify `[DONE]` marker
+- [ ] Write unit tests for watchlist routes: CRUD operations via createRoute contracts, auth required
 
 **Phase 3 Deliverable:** Full intelligence suite live. Users get daily briefings, on-demand AI analysis, and real-time watchlist alerts.
 
@@ -2280,6 +2285,7 @@ Steam OpenID + Supabase is a custom flow (Supabase has no built-in Steam provide
 - [ ] Action Center UI: pending actions with approve/reject buttons and countdown
 - [ ] Auto-approve settings UI with limit sliders and confirmation threshold
 - [ ] Executed action history with outcome tracking
+- [ ] Write integration test for CSFloat buy: mock CSFloat purchase API → verify success flow (money deducted, trade sent), verify failure flow (insufficient balance, item sold), verify ActionGuard blocks out-of-limit buys
 
 **Week 12: Integrations + Polish**
 - [ ] Discord webhook integration: send deal alerts and patch reports to user's Discord channel

@@ -793,6 +793,21 @@ npx playwright test --project=chromium  # Single browser
 npx playwright test --ui                # Interactive debug mode
 ```
 
+### What MUST Be Tested
+
+Every function that falls in these categories gets tests — no exceptions:
+
+| Category | Why | Example |
+|----------|-----|---------|
+| **Handles money** | Bugs = real financial loss | ActionGuard branches, deal scoring, CSFloat buy execution |
+| **Parses external data** | External APIs return unexpected shapes | Steam price strings, CSFloat cents→USD, RSS parsing |
+| **Type boundary** | Where `unknown` becomes typed | `parseJsonField`, `toJsonField`, `createRoute` validation |
+| **Branching logic** | Each branch is a potential bug | if/else chains, switch statements, conditional returns |
+| **API route handler** | Frontend depends on exact shapes | Every route via `createRoute` contract + integration test |
+| **Agent end-to-end** | Agents compose multiple tools | Mock LLM + mock APIs → verify output format + DB state |
+
+What we skip: thin wrappers with no logic, UI components (E2E covers these), config files, third-party library behavior.
+
 ### Coverage Target
 
 80%+ on `packages/agents`, `packages/steam-client`, `packages/csfloat-client`, `packages/types`, `packages/db`.

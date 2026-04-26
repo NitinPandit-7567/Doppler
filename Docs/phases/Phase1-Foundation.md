@@ -182,7 +182,8 @@ Phase 1 has three distinct workstreams. Each builds on the previous.
 - [ ] Install `vitest` at root
 - [ ] Create `vitest.workspace.ts` listing all packages
 - [ ] Create `packages/types/vitest.config.ts` as the first test config
-- [ ] Write one smoke test: validate a Zod schema from `@doppler/types`
+- [ ] Write smoke test: validate a Zod schema from `@doppler/types` — correct data passes, malformed rejects
+- [ ] Write unit tests for `json-helpers`: `parseJsonField` returns typed data, throws on invalid shapes; `toJsonField` rejects invalid writes
 - [ ] Verify: `turbo test` runs and passes
 
 #### Final Verification
