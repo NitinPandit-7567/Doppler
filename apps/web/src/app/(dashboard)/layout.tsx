@@ -1,30 +1,40 @@
-const navItems = [
-  { href: '/overview', label: 'Dashboard' },
-  { href: '/deals', label: 'Deals' },
-  { href: '/alerts', label: 'Alerts' },
-  { href: '/intelligence', label: 'Intelligence' },
-  { href: '/agents', label: 'Agents' },
-  { href: '/settings', label: 'Settings' },
-] as const;
+import { Separator } from '@/components/ui/separator';
+import { SidebarNav } from '@/components/layout/Sidebar';
+import { ThemeToggle } from '@/components/layout/ThemeToggle';
+import { UserMenu } from '@/components/layout/UserMenu';
+import { MobileSidebarToggle } from '@/components/layout/MobileSidebarToggle';
+import { QueryProvider } from '@/providers/QueryProvider';
 
 export default function DashboardLayout({ children }: { readonly children: React.ReactNode }) {
   return (
-    <div className="flex min-h-screen">
-      <aside className="hidden w-64 shrink-0 border-r border-border bg-card p-4 md:block">
-        <div className="mb-8 text-xl font-bold tracking-tight">Doppler</div>
-        <nav className="space-y-1">
-          {navItems.map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-            >
-              {item.label}
-            </a>
-          ))}
-        </nav>
-      </aside>
-      <main className="flex-1 p-6">{children}</main>
-    </div>
+    <QueryProvider>
+      <div className="flex min-h-screen">
+        <aside className="hidden w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+          <div className="p-4">
+            <h2 className="text-lg font-bold tracking-tight text-sidebar-foreground">Doppler</h2>
+            <p className="text-xs text-muted-foreground">CS2 Market Intelligence</p>
+          </div>
+          <Separator />
+          <div className="flex-1 p-3">
+            <SidebarNav />
+          </div>
+        </aside>
+
+        <div className="flex flex-1 flex-col">
+          <header className="flex h-14 items-center gap-3 border-b border-border px-4">
+            <MobileSidebarToggle>
+              <div className="mb-6">
+                <h2 className="text-lg font-bold tracking-tight">Doppler</h2>
+              </div>
+              <SidebarNav />
+            </MobileSidebarToggle>
+            <div className="flex-1" />
+            <ThemeToggle />
+            <UserMenu />
+          </header>
+          <main className="flex-1 overflow-auto p-6">{children}</main>
+        </div>
+      </div>
+    </QueryProvider>
   );
 }
