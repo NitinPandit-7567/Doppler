@@ -43,7 +43,7 @@ export function createRoute<T extends RouteContract>(
       return;
     }
 
-    const bodyResult = contract.body.safeParse(req.body);
+    const bodyResult = contract.body.safeParse(req.body ?? {});
     if (!bodyResult.success) {
       const msg = bodyResult.error.issues.map((i) => i.message).join(', ');
       res.status(400).json({ success: false, error: `Invalid body: ${msg}` } satisfies ApiError);
