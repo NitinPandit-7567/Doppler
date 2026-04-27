@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { pino } from 'pino';
 import { authRouter } from './routes/auth';
 import { inventoryRouter } from './routes/inventory';
+import { marketRouter } from './routes/market';
 import { authenticate } from './middleware/auth';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
@@ -31,6 +32,7 @@ app.use('/api/auth', authRouter);
 
 app.use('/api', authenticate);
 app.use('/api/inventory', inventoryRouter);
+app.use('/api/market', marketRouter);
 
 const port = Number(process.env.PORT) || 4000;
 

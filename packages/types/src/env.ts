@@ -10,8 +10,6 @@ export const ApiEnvSchema = BaseEnvSchema.extend({
   STEAM_API_KEY: z.string().min(1),
   CSFLOAT_API_KEY: z.string().min(1).optional(),
   UPSTASH_REDIS_URL: z.string().min(1),
-  NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   NEXT_PUBLIC_WEB_URL: z.string().url(),
   PORT: z.coerce.number().default(4000),
 });

@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
+import { z } from 'zod';
 import { prisma } from '@doppler/db';
 
 const router = Router();
@@ -8,9 +10,28 @@ const router = Router();
 const STEAM_OPENID_URL = 'https://steamcommunity.com/openid/login';
 const STEAM_API_BASE = 'https://api.steampowered.com';
 
+const SteamPlayerSchema = z.object({
+  response: z.object({
+    players: z.array(
+      z.object({
+        steamid: z.string(),
+        personaname: z.string(),
+        avatarfull: z.string(),
+      }),
+    ),
+  }),
+});
+
+function getWebUrl(): string {
+  return process.env.NEXT_PUBLIC_WEB_URL ?? 'http://localhost:3000';
+}
+
+function getApiUrl(): string {
+  return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+}
+
 function getCallbackUrl(): string {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
-  return `${apiUrl}/api/auth/callback`;
+  return `${getApiUrl()}/api/auth/callback`;
 }
 
 function getJwtSecret(): string {
@@ -24,12 +45,28 @@ function extractSteamId(claimedId: string): string | null {
   return match?.[1] ?? null;
 }
 
+function redirectWithError(res: import('express').Response, message: string): void {
+  const errorUrl = `${getWebUrl()}/login?error=${encodeURIComponent(message)}`;
+  console.error('Auth error:', message);
+  res.redirect(errorUrl);
+}
+
 router.get('/steam', (_req, res) => {
+  const state = crypto.randomBytes(16).toString('hex');
+
+  res.cookie('oauth_state', state, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
+    path: '/',
+  });
+
   const params = new URLSearchParams({
     'openid.ns': 'http://specs.openid.net/auth/2.0',
     'openid.mode': 'checkid_setup',
-    'openid.return_to': getCallbackUrl(),
-    'openid.realm': process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000',
+    'openid.return_to': `${getCallbackUrl()}?state=${state}`,
+    'openid.realm': getApiUrl(),
     'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
     'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
   });
@@ -41,8 +78,37 @@ router.get('/callback', async (req, res) => {
   try {
     const query = req.query as Record<string, string>;
 
+    const state = query.state;
+    const storedState = (req.cookies as Record<string, string> | undefined)?.oauth_state;
+    if (!state || !storedState || state !== storedState) {
+      redirectWithError(res, 'Login session expired. Please try again.');
+      return;
+    }
+    res.clearCookie('oauth_state', { path: '/' });
+
+    const returnTo = query['openid.return_to'];
+    if (!returnTo?.startsWith(getCallbackUrl())) {
+      redirectWithError(res, 'Invalid login redirect. Please try again.');
+      return;
+    }
+
+    const signed = query['openid.signed'];
+    if (!signed) {
+      redirectWithError(res, 'Steam login response was incomplete. Please try again.');
+      return;
+    }
+    const signedFields = signed.split(',');
+    const requiredFields = ['claimed_id', 'identity', 'return_to'];
+    for (const field of requiredFields) {
+      if (!signedFields.includes(field)) {
+        redirectWithError(res, 'Steam login response was incomplete. Please try again.');
+        return;
+      }
+    }
+
     const verifyParams = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {
+      if (key === 'state') continue;
       verifyParams.append(key, value);
     }
     verifyParams.set('openid.mode', 'check_authentication');
@@ -54,19 +120,14 @@ router.get('/callback', async (req, res) => {
 
     const isValid = (verifyResponse.data as string).includes('is_valid:true');
     if (!isValid) {
-      res.status(401).json({ success: false, error: 'Steam OpenID validation failed' });
+      redirectWithError(res, 'Steam could not verify your login. Please try again.');
       return;
     }
 
     const claimedId = query['openid.claimed_id'];
-    if (!claimedId) {
-      res.status(400).json({ success: false, error: 'Missing claimed_id' });
-      return;
-    }
-
-    const steamId = extractSteamId(claimedId);
+    const steamId = claimedId ? extractSteamId(claimedId) : null;
     if (!steamId) {
-      res.status(400).json({ success: false, error: 'Invalid Steam ID in claimed_id' });
+      redirectWithError(res, 'Could not determine your Steam account. Please try again.');
       return;
     }
 
@@ -78,13 +139,15 @@ router.get('/callback', async (req, res) => {
       },
     );
 
-    const players = (profileResponse.data as Record<string, unknown>).response as
-      | { players: Array<{ steamid: string; personaname: string; avatarfull: string }> }
-      | undefined;
+    const parsed = SteamPlayerSchema.safeParse(profileResponse.data);
+    if (!parsed.success) {
+      redirectWithError(res, 'Steam profile could not be loaded. Please try again later.');
+      return;
+    }
 
-    const player = players?.players[0];
+    const player = parsed.data.response.players[0];
     if (!player) {
-      res.status(500).json({ success: false, error: 'Failed to fetch Steam profile' });
+      redirectWithError(res, 'Steam profile not found. Please try again later.');
       return;
     }
 
@@ -108,8 +171,6 @@ router.get('/callback', async (req, res) => {
       { expiresIn: '7d' },
     );
 
-    const webUrl = process.env.NEXT_PUBLIC_WEB_URL ?? 'http://localhost:3000';
-
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -118,10 +179,14 @@ router.get('/callback', async (req, res) => {
       path: '/',
     });
 
-    res.redirect(`${webUrl}/overview`);
+    res.redirect(`${getWebUrl()}/overview`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Auth callback failed';
-    res.status(500).json({ success: false, error: message });
+    if (axios.isAxiosError(error)) {
+      console.error(`Auth callback failed: ${error.config?.url} returned ${error.response?.status}`, error.response?.data);
+    } else {
+      console.error('Auth callback error:', error instanceof Error ? error.message : error);
+    }
+    redirectWithError(res, 'Something went wrong during sign in. Please try again.');
   }
 });
 

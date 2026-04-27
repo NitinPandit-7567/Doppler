@@ -24,7 +24,8 @@
     "cookie-parser": "^1.4.7",
     "@doppler/types": "*",
     "@doppler/db": "*",
-    "@doppler/steam-client": "*"
+    "@doppler/steam-client": "*",
+    "@doppler/csfloat-client": "*"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
