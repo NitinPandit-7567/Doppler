@@ -6,7 +6,13 @@ export const metadata: Metadata = {
 
 const STEAM_AUTH_URL = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/api/auth/steam`;
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const { error } = await searchParams;
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-background">
       <div className="w-full max-w-md space-y-8 px-4 text-center">
@@ -16,6 +22,13 @@ export default function LoginPage() {
             AI-powered CS2 skin market intelligence
           </p>
         </div>
+
+        {error && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
         <div className="space-y-4">
           <a
             href={STEAM_AUTH_URL}
