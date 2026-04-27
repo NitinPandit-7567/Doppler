@@ -171,15 +171,7 @@ router.get('/callback', async (req, res) => {
       { expiresIn: '7d' },
     );
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
-
-    res.redirect(`${getWebUrl()}/overview`);
+    res.redirect(`${getWebUrl()}/api/auth/callback?token=${token}`);
   } catch (error) {
     if (axios.isAxiosError(error)) {
       console.error(`Auth callback failed: ${error.config?.url} returned ${error.response?.status}`, error.response?.data);

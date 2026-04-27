@@ -11,8 +11,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 export function UserMenu() {
-  function handleLogout() {
-    document.cookie = 'token=; path=/; max-age=0';
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
     window.location.href = '/login';
   }
 
