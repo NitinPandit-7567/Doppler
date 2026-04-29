@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { TrendingUp, Zap, Brain, BarChart3, Shield } from 'lucide-react';
+import { SteamIcon } from '@/components/icons/SteamIcon';
 
 export const metadata: Metadata = {
   title: 'Sign In',
@@ -14,36 +16,88 @@ export default async function LoginPage({
   const { error } = await searchParams;
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background">
-      <div className="w-full max-w-md space-y-8 px-4 text-center">
-        <div className="space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight">Doppler</h1>
-          <p className="text-lg text-muted-foreground">
-            AI-powered CS2 skin market intelligence
-          </p>
-        </div>
-
-        {error && (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {error}
+    <div className="relative grid min-h-screen lg:grid-cols-2">
+      {/* Left panel — branding + social proof */}
+      <div className="bg-primary/5 relative hidden flex-col justify-between p-10 lg:flex dark:border-r">
+        <div className="bg-primary/5 absolute inset-0" />
+        <div className="relative z-20 flex items-center gap-2 text-lg font-medium">
+          <div className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
+            <TrendingUp className="size-4" />
           </div>
-        )}
+          Doppler
+        </div>
+        <div className="relative z-20 space-y-6">
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 text-sm">
+              <Zap className="text-primary size-4 shrink-0" />
+              <span>Real-time deal detection across Steam and CSFloat</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <Brain className="text-primary size-4 shrink-0" />
+              <span>AI-powered patch impact analysis and market predictions</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <BarChart3 className="text-primary size-4 shrink-0" />
+              <span>Portfolio tracking with multi-platform price intelligence</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <Shield className="text-primary size-4 shrink-0" />
+              <span>Read-only access — we never trade, buy, or sell on your behalf</span>
+            </div>
+          </div>
+          <blockquote className="border-primary/30 space-y-2 border-l-2 pl-4">
+            <p className="text-sm leading-relaxed text-balance">
+              &ldquo;Doppler found me a Printstream listing at 18% below Steam price while I was
+              sleeping. Paid for itself in a single deal.&rdquo;
+            </p>
+            <footer className="text-muted-foreground text-sm">— CS2 Trader</footer>
+          </blockquote>
+        </div>
+      </div>
 
-        <div className="space-y-4">
-          <a
-            href={STEAM_AUTH_URL}
-            className="inline-flex w-full items-center justify-center gap-3 rounded-lg bg-[#171a21] px-6 py-3 text-base font-medium text-white transition-colors hover:bg-[#2a475e]"
-          >
-            <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
-              <path d="M12 2C6.48 2 2 6.04 2 11.03c0 3.87 2.75 7.16 6.52 8.44l2.75-1.1a2.57 2.57 0 0 1 1.86.04l2.04.97A2.56 2.56 0 0 0 18 17.08v-.04a2.56 2.56 0 0 0-2.56-2.56h-.15l-1.52-1.08a2.57 2.57 0 0 1-.96-2v-.32a2.57 2.57 0 0 1 2.57-2.57h.06c.56 0 1.09.18 1.53.51l1.3.97A9.1 9.1 0 0 0 21.1 7 9.96 9.96 0 0 0 12 2z" />
-            </svg>
-            Sign in with Steam
-          </a>
-          <p className="text-sm text-muted-foreground">
-            We only access your public Steam profile and CS2 inventory.
+      {/* Right panel — auth form */}
+      <div className="flex items-center justify-center p-8">
+        <div className="mx-auto flex w-full max-w-[350px] flex-col justify-center gap-6">
+          <div className="flex flex-col gap-2 text-center">
+            <div className="bg-primary mx-auto mb-2 flex size-10 items-center justify-center rounded-lg lg:hidden">
+              <TrendingUp className="text-primary-foreground size-5" />
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight">Welcome to Doppler</h1>
+            <p className="text-muted-foreground text-sm">
+              Sign in with your Steam account to get started
+            </p>
+          </div>
+
+          {error && (
+            <div className="border-destructive/50 bg-destructive/10 text-destructive rounded-lg border px-4 py-3 text-center text-sm">
+              {error}
+            </div>
+          )}
+
+          <div className="grid gap-4">
+            <a
+              href={STEAM_AUTH_URL}
+              className="focus-visible:ring-ring inline-flex h-9 w-full items-center justify-center gap-3 rounded-lg bg-[#171a21] px-4 text-sm font-medium text-white transition-colors hover:bg-[#2a475e] focus-visible:ring-2 focus-visible:outline-none"
+            >
+              <SteamIcon className="size-5" />
+              Sign in with Steam
+            </a>
+          </div>
+
+          <p className="text-muted-foreground px-2 text-center text-xs leading-relaxed">
+            We only access your public Steam profile and CS2 inventory. By continuing, you agree to
+            our{' '}
+            <a href="#" className="hover:text-primary underline underline-offset-4">
+              Terms of Service
+            </a>{' '}
+            and{' '}
+            <a href="#" className="hover:text-primary underline underline-offset-4">
+              Privacy Policy
+            </a>
+            .
           </p>
         </div>
       </div>
-    </main>
+    </div>
   );
 }

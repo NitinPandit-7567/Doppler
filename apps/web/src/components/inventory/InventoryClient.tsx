@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import type { SteamInventoryItem } from '@doppler/types';
 import { InventoryTable } from './InventoryTable';
-import { PortfolioValueCard } from './PortfolioValueCard';
+import { PortfolioCards } from './PortfolioValueCard';
 import { Card, CardContent } from '@/components/ui/card';
 import { AlertCircle, Lock, Gamepad2 } from 'lucide-react';
 
@@ -108,13 +108,11 @@ export function InventoryClient() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-3">
-        <PortfolioValueCard
-          totalValue={value.data?.totalValueUsd}
-          itemCount={inventory.data?.length}
-          isLoading={value.isLoading || inventory.isLoading}
-        />
-      </div>
+      <PortfolioCards
+        totalValue={value.data?.totalValueUsd}
+        itemCount={inventory.data?.length}
+        isLoading={value.isLoading || inventory.isLoading}
+      />
 
       <InventoryTable items={inventory.data ?? []} isLoading={inventory.isLoading} />
     </div>
